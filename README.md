@@ -66,13 +66,16 @@ Run the included verification script to see Mentat in action with simulated (moc
 uv run python verify_mentat.py
 ```
 
-### 2. CLI (Coming Soon)
+### 2. CLI
 
 ```bash
-# Index a file
+# Probe a file directly (extract structure & stats without LLM)
+mentat probe ./data/report.pdf
+
+# Index a file (Coming Soon)
 mentat index ./data/report.pdf
 
-# Search
+# Search (Coming Soon)
 mentat search "financial summary"
 ```
 

@@ -27,17 +27,13 @@ class CodeProbe(BaseProbe):
         """
         )
 
-        captures = query.captures(tree.root_node)
+        from tree_sitter import QueryCursor
 
-        classes = []
-        functions = []
+        cursor = QueryCursor(query)
+        captures = cursor.captures(tree.root_node)
 
-        for node, tag in captures:
-            name = node.text.decode("utf-8")
-            if tag == "class_name":
-                classes.append(name)
-            elif tag == "func_name":
-                functions.append(name)
+        classes = [n.text.decode("utf-8") for n in captures.get("class_name", [])]
+        functions = [n.text.decode("utf-8") for n in captures.get("func_name", [])]
 
         structure = {"classes": classes, "functions": functions}
 

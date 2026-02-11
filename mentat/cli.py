@@ -41,11 +41,41 @@ def inspect(doc_id):
 
 
 @cli.command()
-@click.argument("file_path", type=click.Path(exists=True))
-def probe(file_path):
-    """Debug a file's probe results directly."""
-    click.echo(f"Probing {file_path}...")
-    # TODO: implement direct probe call
+@click.argument("file_paths", nargs=-1, type=click.Path(exists=True))
+def probe(file_paths):
+    """Run probes on one or more files and print results."""
+    from mentat.probes import get_probe
+
+    if not file_paths:
+        click.echo("No files provided.")
+        return
+
+    for file_path in file_paths:
+        click.echo(f"\n--- Probing {file_path} ---")
+        probe_instance = get_probe(file_path)
+
+        if not probe_instance:
+            click.echo(f"No suitable probe found for {file_path}")
+            continue
+
+        try:
+            result = probe_instance.run(file_path)
+            # Print result in a readable format
+            click.echo(f"File Type: {result.file_type}")
+
+            import json
+
+            click.echo("Stats:")
+            click.echo(json.dumps(result.stats, indent=2, default=str))
+
+            click.echo("Structure:")
+            click.echo(json.dumps(result.structure, indent=2, default=str))
+
+            click.echo(f"Summary Hint: {result.summary_hint}")
+            if result.raw_snippet:
+                click.echo(f"Snippet: {result.raw_snippet[:100]}...")
+        except Exception as e:
+            click.echo(f"Error probing {file_path}: {e}")
 
 
 if __name__ == "__main__":
