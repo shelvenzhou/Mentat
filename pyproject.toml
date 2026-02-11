@@ -1,0 +1,28 @@
+[project]
+name = "mentat"
+version = "0.1.0"
+description = "Pure logic. Strategic retrieval. Next-gen Agentic RAG."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.3.1",
+    "lancedb>=0.29.2",
+    "litellm>=1.81.9",
+    "openai>=2.18.0",
+    "pandas>=2.3.3",
+    "pydantic>=2.12.5",
+    "pymupdf>=1.26.7",
+    "pypdf>=6.7.0",
+    "python-magic>=0.4.27",
+    "pyyaml>=6.0.3",
+    "pyyaml-include>=2.2",
+    "trafilatura>=2.0.0",
+    "tree-sitter>=0.21.3",
+    "tree-sitter-html>=0.23.2",
+    "tree-sitter-javascript>=0.25.0",
+    "tree-sitter-json>=0.24.8",
+    "tree-sitter-python>=0.25.0",
+]
+
+[project.scripts]
+mentat = "mentat.cli:cli"
