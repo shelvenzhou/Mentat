@@ -15,6 +15,7 @@ from mentat.librarian.engine import Librarian
 from mentat.storage.vector_db import LanceDBStorage
 from mentat.storage.file_store import LocalFileStore
 from mentat.storage.cache import ContentHashCache
+from mentat.storage.collections import CollectionStore
 from mentat.adaptors import BaseAdaptor
 
 
@@ -73,6 +74,9 @@ class Mentat:
         self.embeddings = EmbeddingRegistry.get_provider(
             self.config.embedding_provider, model=self.config.embedding_model
         )
+
+        # Collections
+        self.collections_store = CollectionStore(store_dir=self.config.db_path)
 
         # Adaptors
         self._adaptors: List[BaseAdaptor] = []
@@ -180,12 +184,19 @@ class Mentat:
         return doc_id
 
     async def search(
-        self, query: str, top_k: int = 5, hybrid: bool = False
+        self,
+        query: str,
+        top_k: int = 5,
+        hybrid: bool = False,
+        doc_ids: Optional[List[str]] = None,
     ) -> List[MentatResult]:
         """Search for relevant chunks and return results with instructions.
 
         Each result includes the chunk content, its section context,
         and the document-level brief_intro + instructions from the Librarian.
+
+        Args:
+            doc_ids: If provided, restrict search to these documents only.
         """
         # Transform query via adaptors
         for adaptor in self._adaptors:
@@ -193,7 +204,7 @@ class Mentat:
 
         query_vector = await self.embeddings.embed(query)
         raw_results = self.storage.search(
-            query_vector, query, limit=top_k, use_hybrid=hybrid
+            query_vector, query, limit=top_k, use_hybrid=hybrid, doc_ids=doc_ids
         )
 
         results = []
@@ -253,6 +264,14 @@ class Mentat:
 
         return result
 
+    def collection(self, name: str) -> "Collection":
+        """Get a Collection handle for scoped add/search operations."""
+        return Collection(name, self)
+
+    def list_collections(self) -> List[str]:
+        """Return all collection names."""
+        return self.collections_store.list_collections()
+
     def stats(self) -> Dict[str, Any]:
         """Return system statistics."""
         return {
@@ -260,4 +279,66 @@ class Mentat:
             "chunks_stored": self.storage.count_chunks(),
             "cached_hashes": len(self.cache),
             "storage_size_bytes": self.file_store.total_size(),
+            "collections": len(self.collections_store.list_collections()),
         }
+
+
+class Collection:
+    """A named group of documents — scoped view over shared storage.
+
+    Acts as a thin wrapper around Mentat. Documents are indexed into the
+    shared store; the collection just holds doc_id references.
+    """
+
+    def __init__(self, name: str, mentat: Mentat):
+        self.name = name
+        self._mentat = mentat
+        self._store = mentat.collections_store
+
+    @property
+    def doc_ids(self) -> set:
+        return self._store.get_doc_ids(self.name)
+
+    async def add(self, path: str, force: bool = False) -> str:
+        """Index a file (if needed) and add it to this collection.
+
+        Uses the shared cache — if the file was already indexed,
+        just links the existing doc_id without re-processing.
+        """
+        doc_id = await self._mentat.add(path, force=force)
+        self._store.add_doc(self.name, doc_id)
+        return doc_id
+
+    async def search(
+        self, query: str, top_k: int = 5, hybrid: bool = False
+    ) -> List[MentatResult]:
+        """Search only within this collection's documents."""
+        ids = list(self.doc_ids)
+        if not ids:
+            return []
+        return await self._mentat.search(
+            query, top_k=top_k, hybrid=hybrid, doc_ids=ids
+        )
+
+    def remove(self, doc_id: str):
+        """Remove a document from this collection (does NOT delete from storage)."""
+        self._store.remove_doc(self.name, doc_id)
+
+    def list_docs(self) -> List[Dict[str, Any]]:
+        """List documents in this collection with their metadata."""
+        docs = []
+        for doc_id in self.doc_ids:
+            stub = self._mentat.storage.get_stub(doc_id)
+            if stub:
+                docs.append(
+                    {
+                        "doc_id": doc_id,
+                        "filename": stub.get("filename", ""),
+                        "brief_intro": stub.get("brief_intro", ""),
+                    }
+                )
+        return docs
+
+    def delete(self) -> bool:
+        """Delete this collection (does NOT delete underlying documents)."""
+        return self._store.delete_collection(self.name)

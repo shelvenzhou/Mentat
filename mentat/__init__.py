@@ -20,7 +20,7 @@ Usage:
     stats = mentat.stats()
 """
 
-from mentat.core.hub import Mentat, MentatConfig, MentatResult
+from mentat.core.hub import Mentat, MentatConfig, MentatResult, Collection
 from mentat.probes import run_probe
 from mentat.probes.base import ProbeResult, TopicInfo, StructureInfo, Chunk
 from typing import List, Optional
@@ -53,6 +53,16 @@ def stats() -> dict:
     return Mentat.get_instance().stats()
 
 
+def collection(name: str) -> Collection:
+    """Get a named collection for scoped add/search operations."""
+    return Mentat.get_instance().collection(name)
+
+
+def collections() -> List[str]:
+    """List all collection names."""
+    return Mentat.get_instance().list_collections()
+
+
 def configure(config: MentatConfig):
     """Configure Mentat with custom settings. Must be called before first use."""
     Mentat.reset()
@@ -65,9 +75,12 @@ __all__ = [
     "inspect",
     "probe",
     "stats",
+    "collection",
+    "collections",
     "configure",
     "Mentat",
     "MentatConfig",
     "MentatResult",
+    "Collection",
     "ProbeResult",
 ]

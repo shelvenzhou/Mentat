@@ -13,6 +13,7 @@ Mentat solves the **"Token Explosion"** problem in traditional RAG. Instead of f
 - **Cost-Efficient**: Non-LLM probes extract structure and stats from files without spending tokens.
 - **Strategy Retrieval**: Returns _instructions_ (e.g., "Filter Column B for values > 100") alongside data.
 - **Format-Aware Chunking**: Chunks preserve structural context (section, page, class/function).
+- **Collections**: Named groups of documents for scoped search — shared storage, no vector duplication.
 - **Hybrid Search**: LanceDB-powered vector + full-text search with reranking.
 - **Telemetry**: Built-in tracking of token savings and processing time.
 
@@ -85,6 +86,36 @@ info = await mentat.inspect(doc_id)
 mentat.stats()
 ```
 
+#### Collections
+
+Group files into named collections for scoped search. Documents are indexed once into shared storage — collections hold lightweight references (like soft links), so the same file in multiple collections costs zero extra storage or indexing.
+
+```python
+import mentat
+
+# Create / open a collection
+papers = mentat.collection("research_papers")
+
+# Add files (indexes if new, just links if already indexed)
+await papers.add("paper1.pdf")
+await papers.add("paper2.pdf")
+
+# Search within collection only
+results = await papers.search("quantum computing")
+
+# Same file in another collection — no re-indexing
+physics = mentat.collection("quantum_physics")
+await physics.add("paper1.pdf")   # cache hit, links only
+
+# List & manage
+papers.list_docs()                # [{doc_id, filename, brief_intro}, ...]
+papers.remove(doc_id)             # unlink, not delete
+mentat.collections()              # ["research_papers", "quantum_physics"]
+
+# Global search still works across everything
+results = await mentat.search("quantum computing")
+```
+
 ### CLI
 
 ```bash
@@ -92,14 +123,22 @@ mentat.stats()
 mentat probe data/report.pdf --format rich
 mentat probe data/dataset.csv --format json
 
-# Index a file
+# Index a file (optionally into a collection)
 mentat index data/report.pdf
+mentat index data/report.pdf -c research_papers
 
-# Search
+# Search (optionally scoped to a collection)
 mentat search "financial summary" --top-k 10 --hybrid
+mentat search "financial summary" -c research_papers
 
 # Inspect an indexed document
 mentat inspect <doc_id>
+
+# Manage collections
+mentat collection list
+mentat collection show research_papers
+mentat collection delete research_papers
+mentat collection remove research_papers <doc_id>
 
 # System stats
 mentat stats

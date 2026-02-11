@@ -20,20 +20,34 @@ def cli(debug):
 @click.option(
     "--force", is_flag=True, help="Re-index even if file was already processed"
 )
-def index(path, force):
+@click.option(
+    "-c", "--collection", "coll_name", default=None, help="Add to a named collection"
+)
+def index(path, force, coll_name):
     """Index a file or directory."""
     m = Mentat()
-    asyncio.run(m.add(path, force=force))
+    if coll_name:
+        coll = m.collection(coll_name)
+        asyncio.run(coll.add(path, force=force))
+    else:
+        asyncio.run(m.add(path, force=force))
 
 
 @cli.command()
 @click.argument("query")
 @click.option("--top-k", "-k", default=5, help="Number of results to return")
 @click.option("--hybrid", is_flag=True, help="Use hybrid search (vector + FTS)")
-def search(query, top_k, hybrid):
+@click.option(
+    "-c", "--collection", "coll_name", default=None, help="Search within a collection"
+)
+def search(query, top_k, hybrid, coll_name):
     """Search for relevant files/strategies."""
     m = Mentat()
-    results = asyncio.run(m.search(query, top_k=top_k, hybrid=hybrid))
+    if coll_name:
+        coll = m.collection(coll_name)
+        results = asyncio.run(coll.search(query, top_k=top_k, hybrid=hybrid))
+    else:
+        results = asyncio.run(m.search(query, top_k=top_k, hybrid=hybrid))
     if not results:
         click.echo("No results found.")
         return
@@ -198,6 +212,64 @@ def stats():
     size_mb = s["storage_size_bytes"] / (1024 * 1024)
     click.echo(f"  Raw storage:       {size_mb:.2f} MB")
     click.echo(f"{'═' * 40}")
+
+
+@cli.group("collection")
+def collection_cmd():
+    """Manage collections (named groups of documents)."""
+    pass
+
+
+@collection_cmd.command("list")
+def collection_list():
+    """List all collections."""
+    m = Mentat()
+    names = m.list_collections()
+    if not names:
+        click.echo("No collections.")
+        return
+    for name in names:
+        coll = m.collection(name)
+        click.echo(f"  {name}  ({len(coll.doc_ids)} docs)")
+
+
+@collection_cmd.command("show")
+@click.argument("name")
+def collection_show(name):
+    """Show documents in a collection."""
+    m = Mentat()
+    coll = m.collection(name)
+    docs = coll.list_docs()
+    if not docs:
+        click.echo(f"Collection '{name}' is empty or does not exist.")
+        return
+    click.echo(f"\n  Collection: {name} ({len(docs)} docs)")
+    click.echo(f"{'─' * 60}")
+    for doc in docs:
+        click.echo(f"  {doc['doc_id'][:8]}…  {doc['filename']}")
+        if doc.get("brief_intro"):
+            click.echo(f"    {doc['brief_intro'][:80]}")
+
+
+@collection_cmd.command("delete")
+@click.argument("name")
+def collection_delete(name):
+    """Delete a collection (does NOT delete the indexed documents)."""
+    m = Mentat()
+    if m.collection(name).delete():
+        click.echo(f"Deleted collection '{name}'.")
+    else:
+        click.echo(f"Collection '{name}' not found.")
+
+
+@collection_cmd.command("remove")
+@click.argument("name")
+@click.argument("doc_id")
+def collection_remove(name, doc_id):
+    """Remove a document from a collection (does NOT delete from storage)."""
+    m = Mentat()
+    m.collection(name).remove(doc_id)
+    click.echo(f"Removed {doc_id[:8]}… from '{name}'.")
 
 
 if __name__ == "__main__":

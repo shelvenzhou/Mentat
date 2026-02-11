@@ -104,19 +104,26 @@ class LanceDBStorage:
         query_text: str = "",
         limit: int = 5,
         use_hybrid: bool = False,
+        doc_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """Search chunks by vector similarity, optionally with hybrid (FTS + vector) search."""
+        """Search chunks by vector similarity, optionally with hybrid (FTS + vector) search.
+
+        Args:
+            doc_ids: If provided, restrict search to chunks belonging to these documents.
+                     Uses LanceDB pre-filtering for efficient scoped search.
+        """
         if use_hybrid and self._has_fts_index():
             # LanceDB hybrid search: vector + FTS with reranking
-            results = (
-                self.chunks_table.search(query_vector, query_type="hybrid")
-                .limit(limit)
-                .to_list()
-            )
+            q = self.chunks_table.search(query_vector, query_type="hybrid")
         else:
             # Pure vector search
-            results = self.chunks_table.search(query_vector).limit(limit).to_list()
-        return results
+            q = self.chunks_table.search(query_vector)
+
+        if doc_ids is not None:
+            ids_str = ", ".join(f"'{d}'" for d in doc_ids)
+            q = q.where(f"doc_id IN ({ids_str})")
+
+        return q.limit(limit).to_list()
 
     def _has_fts_index(self) -> bool:
         """Check if FTS index exists on chunks table."""
@@ -130,6 +137,13 @@ class LanceDBStorage:
         """Create FTS index on chunk content for hybrid search."""
         try:
             self.chunks_table.create_fts_index("content")
+        except Exception:
+            pass  # Index may already exist
+
+    def ensure_scalar_index(self):
+        """Create scalar index on doc_id for fast collection pre-filtering."""
+        try:
+            self.chunks_table.create_index("doc_id", index_type="BTREE")
         except Exception:
             pass  # Index may already exist
 

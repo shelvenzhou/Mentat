@@ -13,10 +13,8 @@ venv/
 .uv/
 
 # Mentat Storage
-mentat_db/
-mentat_files/
-test_mentat_db/
-test_mentat_files/
+*mentat_db/
+*mentat_files/
 
 # IDEs
 .vscode/
