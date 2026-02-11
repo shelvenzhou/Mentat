@@ -66,10 +66,14 @@ def probe(file_paths):
             import json
 
             click.echo("Stats:")
-            click.echo(json.dumps(result.stats, indent=2, default=str))
+            click.echo(
+                json.dumps(result.stats, indent=2, default=str, ensure_ascii=False)
+            )
 
             click.echo("Structure:")
-            click.echo(json.dumps(result.structure, indent=2, default=str))
+            click.echo(
+                json.dumps(result.structure, indent=2, default=str, ensure_ascii=False)
+            )
 
             click.echo(f"Summary Hint: {result.summary_hint}")
             if result.raw_snippet:
