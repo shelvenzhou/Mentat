@@ -26,9 +26,9 @@ from mentat.probes.base import ProbeResult, TopicInfo, StructureInfo, Chunk
 from typing import List, Optional
 
 
-async def add(path: str, **kwargs) -> str:
+async def add(path: str, force: bool = False, **kwargs) -> str:
     """Index a file. Returns document ID."""
-    return await Mentat.get_instance().add(path, **kwargs)
+    return await Mentat.get_instance().add(path, force=force, **kwargs)
 
 
 async def search(

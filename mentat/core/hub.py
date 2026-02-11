@@ -14,6 +14,7 @@ from mentat.probes.base import ProbeResult
 from mentat.librarian.engine import Librarian
 from mentat.storage.vector_db import LanceDBStorage
 from mentat.storage.file_store import LocalFileStore
+from mentat.storage.cache import ContentHashCache
 from mentat.adaptors import BaseAdaptor
 
 
@@ -63,6 +64,7 @@ class Mentat:
             db_path=self.config.db_path, vector_dim=self.config.vector_dim
         )
         self.file_store = LocalFileStore(storage_dir=self.config.storage_dir)
+        self.cache = ContentHashCache(cache_dir=self.config.db_path)
 
         # Layer 3: Librarian
         self.librarian = Librarian(model=self.config.librarian_model)
@@ -91,11 +93,22 @@ class Mentat:
         """Register an adaptor for lifecycle hooks."""
         self._adaptors.append(adaptor)
 
-    async def add(self, path: str) -> str:
+    async def add(self, path: str, force: bool = False) -> str:
         """Index a file: probe → librarian → embed → store.
 
-        Returns the document ID.
+        Returns the document ID. Skips processing if an identical file
+        (by content hash) was already indexed, unless force=True.
         """
+        # Check content hash cache
+        if not force:
+            cached_id = self.cache.get(path)
+            if cached_id:
+                self.logger.info(f"Cache hit for {path} -> {cached_id}, skipping.")
+                print(
+                    f"[Cache] Already indexed as {cached_id}. Use force=True to re-index."
+                )
+                return cached_id
+
         doc_id = str(uuid.uuid4())
         filename = Path(path).name
         self.logger.info(f"Adding file: {path} (ID: {doc_id})")
@@ -159,6 +172,9 @@ class Mentat:
             adaptor.on_document_indexed(
                 doc_id, {"filename": filename, "brief_intro": brief_intro}
             )
+
+        # Record in content hash cache
+        self.cache.put(path, doc_id)
 
         print(Telemetry.format_stats(doc_id))
         return doc_id
@@ -242,5 +258,6 @@ class Mentat:
         return {
             "docs_indexed": self.storage.count_docs(),
             "chunks_stored": self.storage.count_chunks(),
+            "cached_hashes": len(self.cache),
             "storage_size_bytes": self.file_store.total_size(),
         }

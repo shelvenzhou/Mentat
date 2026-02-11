@@ -17,10 +17,13 @@ def cli(debug):
 
 @cli.command()
 @click.argument("path", type=click.Path(exists=True))
-def index(path):
+@click.option(
+    "--force", is_flag=True, help="Re-index even if file was already processed"
+)
+def index(path, force):
     """Index a file or directory."""
     m = Mentat()
-    asyncio.run(m.add(path))
+    asyncio.run(m.add(path, force=force))
 
 
 @cli.command()
@@ -191,6 +194,7 @@ def stats():
     click.echo(f"{'─' * 40}")
     click.echo(f"  Documents indexed: {s['docs_indexed']}")
     click.echo(f"  Chunks stored:     {s['chunks_stored']}")
+    click.echo(f"  Cached hashes:     {s['cached_hashes']}")
     size_mb = s["storage_size_bytes"] / (1024 * 1024)
     click.echo(f"  Raw storage:       {size_mb:.2f} MB")
     click.echo(f"{'═' * 40}")
