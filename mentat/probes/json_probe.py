@@ -1,10 +1,18 @@
-import json
+import json as json_module
 from pathlib import Path
 from typing import Dict, Any, List, Union
-from mentat.probes.base import BaseProbe, ProbeResult
+from mentat.probes.base import (
+    BaseProbe,
+    ProbeResult,
+    TopicInfo,
+    StructureInfo,
+    Chunk,
+)
 
 
 class JSONProbe(BaseProbe):
+    """Probe for JSON files."""
+
     def can_handle(self, filename: str, content_type: str) -> bool:
         return filename.lower().endswith(".json") or content_type == "application/json"
 
@@ -27,13 +35,12 @@ class JSONProbe(BaseProbe):
 
     def run(self, file_path: str) -> ProbeResult:
         with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            data = json_module.load(f)
 
-        # 1. Structure: Schema tree
+        # --- Structure: Schema tree ---
         schema_tree = self._infer_schema(data)
-        structure = {"schema_tree": schema_tree}
 
-        # 2. Stats: Value distribution (if list of dicts)
+        # --- Stats ---
         stats = {}
         if isinstance(data, list):
             stats["item_count"] = len(data)
@@ -43,16 +50,28 @@ class JSONProbe(BaseProbe):
             stats["top_level_keys"] = list(data.keys())
             stats["key_count"] = len(data)
 
-        # 3. Summary Hint
-        summary_hint = f"JSON file with {stats.get('item_count', stats.get('key_count', 0))} elements. "
-        summary_hint += f"Structure follows: {list(schema_tree.keys())[:5] if isinstance(schema_tree, dict) else 'list'}."
+        # --- Topic ---
+        topic = TopicInfo(title=Path(file_path).stem)
+
+        structure = StructureInfo(schema_tree=schema_tree)
+
+        # --- Chunks: truncated sample ---
+        raw = json_module.dumps(data, indent=2, ensure_ascii=False)
+        chunks = [
+            Chunk(
+                content=raw[:2000],
+                index=0,
+                section="root",
+                metadata={"truncated": len(raw) > 2000, "total_size": len(raw)},
+            )
+        ]
 
         return ProbeResult(
-            doc_id="",
             filename=Path(file_path).name,
             file_type="json",
+            topic=topic,
             structure=structure,
             stats=stats,
-            summary_hint=summary_hint,
-            raw_snippet=json.dumps(data, indent=2)[:500],
+            chunks=chunks,
+            raw_snippet=raw[:500],
         )

@@ -4,53 +4,52 @@
 >
 > _Next-generation Agentic RAG system that transforms "Content Retrieval" into "Strategy Retrieval"._
 
-Mentat is designed to solve the **"Token Explosion"** problem in traditional RAG. Instead of feeding raw documents to an LLM, Mentat uses statistical probes to extract structure and metadata, then uses a "Librarian" LLM to generate **"Reading Guides"**.
-
-When you search in Mentat, you don't just get text chunks; you get **Actionable Instructions** on how to read and process the data efficiently.
+Mentat solves the **"Token Explosion"** problem in traditional RAG. Instead of feeding raw documents to an LLM, Mentat uses statistical probes to extract structure and metadata, then a "Librarian" LLM generates **Reading Guides** — actionable instructions on how to efficiently use each file.
 
 ---
 
 ## 🚀 Features
 
-- **Cost-Efficient**: Uses "Probes" (non-LLM code) to extract 80% of the value from files without spending tokens.
+- **Cost-Efficient**: Non-LLM probes extract structure and stats from files without spending tokens.
 - **Strategy Retrieval**: Returns _instructions_ (e.g., "Filter Column B for values > 100") alongside data.
-- **Hybrid Search**: Combines semantic understanding with structural metadata.
+- **Format-Aware Chunking**: Chunks preserve structural context (section, page, class/function).
+- **Hybrid Search**: LanceDB-powered vector + full-text search with reranking.
 - **Telemetry**: Built-in tracking of token savings and processing time.
 
 ## 🏗 Architecture
 
-### Layer 1: The Haystack (Physical)
+### Layer 1: The Haystack (Physical Storage)
 
-- **LanceDB**: Vector storage for stubs (Metadata + Instructions).
-- **FileStore**: Raw file backup.
+- **LanceDB**: Separate tables for document stubs (metadata + instructions) and chunk-level vectors.
+- **FileStore**: Raw file storage with an abstract base for future VirtualFS extensions.
 
 ### Layer 2: The Probes (Statistical)
 
 Mature libraries extract structure without LLMs:
 
-- **PDF**: `pymupdf` (ToC, Metadata)
-- **CSV**: `pandas` (Null rates, Outliers, Schema)
-- **Markdown**: Regex (Header hierarchy, Link density)
-- **JSON**: Recursive Schema Inference
-- **Web**: `trafilatura` (Main content extraction)
-- **Code**: `tree-sitter` (Class/Function definitions)
+| Format   | Library       | Extracts                                                          |
+| -------- | ------------- | ----------------------------------------------------------------- |
+| PDF      | `pymupdf`     | Title, ToC (native + visual inference), captions, per-page chunks |
+| CSV      | `pandas`      | Columns, `describe()`, null rates, outliers (Z>3), string lengths |
+| Markdown | regex         | Header hierarchy, section-aware chunks                            |
+| JSON     | stdlib        | Recursive schema tree (keys structure)                            |
+| Web/HTML | `trafilatura` | Main content, title, date, domain                                 |
+| Python   | `tree-sitter` | Class/function definitions, AST-based chunks                      |
 
 ### Layer 3: The Librarian (Instruction)
 
-- Uses **litellm** to generate "Reading Guides" based on Probe results.
+- Uses **litellm** to generate "Reading Guides" from probe results only (never the raw file).
 - Supports OpenAI, Claude, Gemini, Ollama, etc.
 
 ---
 
 ## 📦 Installation
 
-Mentat uses `uv` for dependency management.
-
 ```bash
 # Install uv if needed
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Clone and install dependencies
+# Clone and install
 git clone https://github.com/yourusername/mentat.git
 cd mentat
 uv sync
@@ -58,40 +57,52 @@ uv sync
 
 ## 🛠 Usage
 
-### 1. Verification / Demo
-
-Run the included verification script to see Mentat in action with simulated (mock) LLM calls:
-
-```bash
-uv run python verify_mentat.py
-```
-
-### 2. CLI
-
-```bash
-# Probe a file directly (extract structure & stats without LLM)
-mentat probe ./data/report.pdf
-
-# Index a file (Coming Soon)
-mentat index ./data/report.pdf
-
-# Search (Coming Soon)
-mentat search "financial summary"
-```
-
-### 3. Python API
+### Python API
 
 ```python
-from mentat.core.hub import Mentat
+import mentat
 
-m = Mentat()
+# Probe a file (no LLM, no storage — just structure extraction)
+result = mentat.probe("data/report.pdf")
+print(result.topic.title)
+print(result.structure.toc)
+print(result.chunks)
 
-# Add a file (Probes -> Librarian -> Vector DB)
-doc_id = await m.add("data/large_dataset.csv")
+# Index a file (Probe → Librarian → Embed → Store)
+doc_id = await mentat.add("data/report.pdf")
 
-# Search (Returns MentatResult with instructions)
-results = await m.search("outlier detection")
-print(results[0].instructions)
+# Search (returns chunks with instructions)
+results = await mentat.search("outlier detection", top_k=5)
+for r in results:
+    print(f"[{r.filename}] §{r.section}")
+    print(f"  {r.brief_intro}")
+    print(f"  Guide: {r.instructions}")
+
+# Inspect an indexed document
+info = await mentat.inspect(doc_id)
+
+# System statistics
+mentat.stats()
+```
+
+### CLI
+
+```bash
+# Probe a file (rich or JSON output)
+mentat probe data/report.pdf --format rich
+mentat probe data/dataset.csv --format json
+
+# Index a file
+mentat index data/report.pdf
+
+# Search
+mentat search "financial summary" --top-k 10 --hybrid
+
+# Inspect an indexed document
+mentat inspect <doc_id>
+
+# System stats
+mentat stats
 ```
 
 ---
@@ -103,3 +114,9 @@ Mentat automatically tracks performance:
 ```text
 [Stats] Probed: 14.0ms | Librarian: 450ms | Tokens: 150 | Saved: 95.8% context
 ```
+
+## 🔌 Extensibility
+
+- **Custom Probes**: Implement `BaseProbe` to support new file formats.
+- **Adaptors**: Implement `BaseAdaptor` to integrate Mentat with external systems (e.g., OpenClaw).
+- **VirtualFS** (planned): Extend `BaseFileStore` to provide `ls`, `cat`, `head`, `tail`, `grep`, `find` over stored files.

@@ -1,65 +1,155 @@
 import lancedb
 import pyarrow as pa
 from typing import List, Dict, Any, Optional
-import os
+
+
+# Schema for document-level metadata (stubs)
+STUBS_SCHEMA = pa.schema(
+    [
+        pa.field("id", pa.string()),
+        pa.field("filename", pa.string()),
+        pa.field("brief_intro", pa.string()),
+        pa.field("instruction", pa.string()),
+        pa.field("probe_json", pa.string()),  # Full ProbeResult as JSON
+    ]
+)
+
+# Schema for chunk-level data with vectors
+CHUNKS_SCHEMA = pa.schema(
+    [
+        pa.field("chunk_id", pa.string()),
+        pa.field("doc_id", pa.string()),  # Foreign key to stubs
+        pa.field("filename", pa.string()),
+        pa.field("content", pa.string()),
+        pa.field("section", pa.string()),
+        pa.field("chunk_index", pa.int32()),
+        pa.field(
+            "vector", pa.list_(pa.float32(), 1536)
+        ),  # Dimension configurable later
+    ]
+)
 
 
 class LanceDBStorage:
-    def __init__(self, db_path: str = "./mentat_db", table_name: str = "stubs"):
-        self.db_path = db_path
-        self.table_name = table_name
-        self.db = lancedb.connect(db_path)
-        self.table = self._get_or_create_table()
+    """Storage layer using LanceDB for vector search and FTS.
+    Stores document stubs (metadata) and chunks (content + vectors) in separate tables.
+    """
 
-    def _get_or_create_table(self):
-        # Define schema for the "stubs"
-        schema = pa.schema(
+    def __init__(self, db_path: str = "./mentat_db", vector_dim: int = 1536):
+        self.db_path = db_path
+        self.vector_dim = vector_dim
+        self.db = lancedb.connect(db_path)
+        self.stubs_table = self._get_or_create_table("stubs", STUBS_SCHEMA)
+        self.chunks_table = self._get_or_create_table(
+            "chunks", self._chunks_schema(vector_dim)
+        )
+
+    def _chunks_schema(self, dim: int) -> pa.Schema:
+        return pa.schema(
             [
-                pa.field("id", pa.string()),
+                pa.field("chunk_id", pa.string()),
+                pa.field("doc_id", pa.string()),
                 pa.field("filename", pa.string()),
-                pa.field("content", pa.string()),  # The stub/chunk content
-                pa.field(
-                    "vector", pa.list_(pa.float32(), 1536)
-                ),  # Assuming 1536 for OpenAI-like, will be dynamic later
-                pa.field("metadata", pa.string()),  # JSON string
-                pa.field("instruction", pa.string()),
+                pa.field("content", pa.string()),
+                pa.field("section", pa.string()),
+                pa.field("chunk_index", pa.int32()),
+                pa.field("vector", pa.list_(pa.float32(), dim)),
             ]
         )
 
-        if self.table_name in self.db.table_names():
-            return self.db.open_table(self.table_name)
-        else:
-            # Create table with dummy record to enforce schema if needed, or just let it be dynamic
-            return self.db.create_table(self.table_name, schema=schema)
+    def _get_or_create_table(self, name: str, schema: pa.Schema):
+        if name in self.db.table_names():
+            return self.db.open_table(name)
+        return self.db.create_table(name, schema=schema)
+
+    # --- Document-level operations ---
 
     def add_stub(
         self,
         doc_id: str,
         filename: str,
-        content: str,
-        vector: List[float],
-        metadata: str,
+        brief_intro: str,
         instruction: str,
+        probe_json: str,
     ):
+        """Store document-level metadata."""
         data = [
             {
                 "id": doc_id,
                 "filename": filename,
-                "content": content,
-                "vector": vector,
-                "metadata": metadata,
+                "brief_intro": brief_intro,
                 "instruction": instruction,
+                "probe_json": probe_json,
             }
         ]
-        self.table.add(data)
+        self.stubs_table.add(data)
 
-    def search_hybrid(
-        self, query_vector: List[float], query_text: str, limit: int = 5
+    def get_stub(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a document stub by ID."""
+        res = self.stubs_table.search().where(f"id = '{doc_id}'").limit(1).to_list()
+        if res:
+            return res[0]
+        return None
+
+    # --- Chunk-level operations ---
+
+    def add_chunks(self, chunks: List[Dict[str, Any]]):
+        """Store multiple chunks with their vectors."""
+        if chunks:
+            self.chunks_table.add(chunks)
+
+    def search(
+        self,
+        query_vector: List[float],
+        query_text: str = "",
+        limit: int = 5,
+        use_hybrid: bool = False,
     ) -> List[Dict[str, Any]]:
-        # LanceDB hybrid search (Vector + FTS)
-        # Note: FTS needs to be enabled on the table first
-        results = self.table.search(query_vector).limit(limit).to_list()
+        """Search chunks by vector similarity, optionally with hybrid (FTS + vector) search."""
+        if use_hybrid and self._has_fts_index():
+            # LanceDB hybrid search: vector + FTS with reranking
+            results = (
+                self.chunks_table.search(query_vector, query_type="hybrid")
+                .limit(limit)
+                .to_list()
+            )
+        else:
+            # Pure vector search
+            results = self.chunks_table.search(query_vector).limit(limit).to_list()
         return results
 
+    def _has_fts_index(self) -> bool:
+        """Check if FTS index exists on chunks table."""
+        try:
+            indices = self.chunks_table.list_indices()
+            return any(getattr(idx, "index_type", "") == "FTS" for idx in indices)
+        except Exception:
+            return False
+
     def create_fts_index(self):
-        self.table.create_fts_index("content")
+        """Create FTS index on chunk content for hybrid search."""
+        try:
+            self.chunks_table.create_fts_index("content")
+        except Exception:
+            pass  # Index may already exist
+
+    def count_docs(self) -> int:
+        """Count total indexed documents."""
+        try:
+            return self.stubs_table.count_rows()
+        except Exception:
+            return 0
+
+    def count_chunks(self) -> int:
+        """Count total stored chunks."""
+        try:
+            return self.chunks_table.count_rows()
+        except Exception:
+            return 0
+
+    def list_docs(self) -> List[Dict[str, Any]]:
+        """List all indexed document stubs."""
+        try:
+            return self.stubs_table.search().limit(1000).to_list()
+        except Exception:
+            return []
