@@ -34,12 +34,17 @@ class Librarian:
         structure = probe_result.structure
         struct_parts = []
         if structure.toc:
-            toc_str = "\n".join(
-                f"  {'  ' * (e.level - 1)}- {e.title}"
-                + (f" (p.{e.page})" if e.page else "")
-                for e in structure.toc[:20]
-            )
-            struct_parts.append(f"Table of Contents:\n{toc_str}")
+            toc_lines = []
+            for e in structure.toc[:20]:
+                line = f"  {'  ' * (e.level - 1)}- {e.title}"
+                if e.annotation:
+                    line += f" ({e.annotation})"
+                if e.page:
+                    line += f" (p.{e.page})"
+                if e.preview:
+                    line += f" — {e.preview}"
+                toc_lines.append(line)
+            struct_parts.append(f"Table of Contents:\n" + "\n".join(toc_lines))
         if structure.captions:
             caps = ", ".join(c.text[:60] for c in structure.captions[:10])
             struct_parts.append(f"Captions: {caps}")
@@ -60,6 +65,8 @@ class Librarian:
 
         # Chunk info
         chunk_info = f"{len(probe_result.chunks)} chunks available."
+        if probe_result.stats.get("is_full_content"):
+            chunk_info += " (Full content provided.)"
 
         prompt = f"""You are 'The Librarian' for the Mentat system.
 Your job is to provide a 'Reading Guide' for a model that will use this file.

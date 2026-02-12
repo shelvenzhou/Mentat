@@ -154,8 +154,10 @@ def probe(file_paths, fmt):
                     )
                     for entry in result.structure.toc[:15]:
                         indent = "    " + "  " * (entry.level - 1)
+                        annot = f" ({entry.annotation})" if entry.annotation else ""
                         page = f" (p.{entry.page})" if entry.page else ""
-                        click.echo(f"{indent}- {entry.title}{page}")
+                        preview = f" — {entry.preview}" if entry.preview else ""
+                        click.echo(f"{indent}- {entry.title}{annot}{page}{preview}")
 
                 if result.structure.captions:
                     click.echo(f"\n  Captions ({len(result.structure.captions)}):")

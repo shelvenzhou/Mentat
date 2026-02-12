@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import List, Optional, Tuple
 from mentat.probes.base import (
     BaseProbe,
     ProbeResult,
@@ -9,6 +9,39 @@ from mentat.probes.base import (
     TocEntry,
     Chunk,
 )
+from mentat.probes._utils import estimate_tokens, extract_preview, SMALL_FILE_TOKENS
+
+# If heading density exceeds this AND tokens < _DENSITY_TOKEN_CAP, return full content.
+_HEADING_DENSITY_THRESHOLD = 0.25
+_DENSITY_TOKEN_CAP = 3000
+
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+", re.MULTILINE)
+_CODE_FENCE_RE = re.compile(r"^```", re.MULTILINE)
+_LINK_RE = re.compile(r"\[.*?\]\(.*?\)")
+_HEADER_RE = re.compile(r"^(#{1,6})\s+(.*)$", re.MULTILINE)
+
+
+def _annotate_section(section_body: str) -> Optional[str]:
+    """Detect structural features within a section body and return a compact annotation."""
+    parts = []
+
+    list_items = len(_LIST_ITEM_RE.findall(section_body))
+    if list_items:
+        parts.append(f"List, {list_items} items")
+
+    code_fences = len(_CODE_FENCE_RE.findall(section_body))
+    code_blocks = code_fences // 2
+    if code_blocks:
+        parts.append(f"Code blocks, {code_blocks}")
+
+    links = len(_LINK_RE.findall(section_body))
+    if links:
+        parts.append(f"{links} links")
+
+    line_count = len([l for l in section_body.split("\n") if l.strip()])
+    parts.append(f"{line_count} lines")
+
+    return " | ".join(parts) if parts else None
 
 
 class MarkdownProbe(BaseProbe):
@@ -22,27 +55,91 @@ class MarkdownProbe(BaseProbe):
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        # --- Structure: Header hierarchy as ToC ---
-        header_pattern = re.compile(r"^(#{1,6})\s+(.*)$", re.MULTILINE)
-        toc_entries = []
-        for match in header_pattern.finditer(content):
-            level = len(match.group(1))
-            title = match.group(2).strip()
-            toc_entries.append(TocEntry(level=level, title=title))
+        lines = content.split("\n")
+        words = content.split()
+        approx_tokens = estimate_tokens(content)
 
-        structure = StructureInfo(toc=toc_entries)
+        # --- Collect raw header matches for section boundary detection ---
+        header_matches = list(_HEADER_RE.finditer(content))
+
+        # --- Basic stats (computed regardless of path) ---
+        links = _LINK_RE.findall(content)
+        code_fences = _CODE_FENCE_RE.findall(content)
+        total_lines = len(lines)
+        heading_density = len(header_matches) / max(total_lines, 1)
+
+        stats = {
+            "link_count": len(links),
+            "code_block_count": len(code_fences) // 2,
+            "word_count": len(words),
+            "approx_tokens": approx_tokens,
+            "heading_density": round(heading_density, 3),
+        }
 
         # --- Topic: title from first H1, first paragraph ---
+        topic = self._extract_topic(lines, header_matches, file_path)
+
+        # --- Decision: should we return full content? ---
+        is_small = approx_tokens < SMALL_FILE_TOKENS
+        is_fragmented = (
+            heading_density > _HEADING_DENSITY_THRESHOLD
+            and approx_tokens < _DENSITY_TOKEN_CAP
+        )
+
+        if is_small or is_fragmented:
+            stats["is_full_content"] = True
+            # Minimal ToC (no preview/annotation needed — full text is provided)
+            toc_entries = [
+                TocEntry(level=len(m.group(1)), title=m.group(2).strip())
+                for m in header_matches
+            ]
+            return ProbeResult(
+                filename=Path(file_path).name,
+                file_type="markdown",
+                topic=topic,
+                structure=StructureInfo(toc=toc_entries),
+                stats=stats,
+                chunks=[Chunk(content=content, index=0)],
+                raw_snippet=content,
+            )
+
+        # --- Enhanced skeleton path ---
+        stats["is_full_content"] = False
+        toc_entries, _ = self._build_enhanced_toc(
+            content, header_matches
+        )
+
+        # --- Chunks: split by headers with enriched section names ---
+        chunks = self._split_by_headers(content, header_matches)
+
+        return ProbeResult(
+            filename=Path(file_path).name,
+            file_type="markdown",
+            topic=topic,
+            structure=StructureInfo(toc=toc_entries),
+            stats=stats,
+            chunks=chunks,
+            raw_snippet=content[:500],
+        )
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _extract_topic(
+        self,
+        lines: List[str],
+        header_matches: list,
+        file_path: str,
+    ) -> TopicInfo:
         title = None
-        first_paragraph = None
-        for entry in toc_entries:
-            if entry.level == 1:
-                title = entry.title
+        for m in header_matches:
+            if len(m.group(1)) == 1:
+                title = m.group(2).strip()
                 break
 
-        # First paragraph: first non-empty, non-header block of text
-        lines = content.split("\n")
-        para_lines = []
+        # First paragraph: first non-empty, non-header block
+        para_lines: List[str] = []
         for line in lines:
             stripped = line.strip()
             if stripped and not stripped.startswith("#"):
@@ -51,57 +148,72 @@ class MarkdownProbe(BaseProbe):
                     break
             elif para_lines:
                 break
-        if para_lines:
-            first_paragraph = " ".join(para_lines)
 
-        topic = TopicInfo(
-            title=title or Path(file_path).stem, first_paragraph=first_paragraph
+        first_paragraph = " ".join(para_lines) if para_lines else None
+
+        return TopicInfo(
+            title=title or Path(file_path).stem,
+            first_paragraph=first_paragraph,
         )
 
-        # --- Stats ---
-        links = re.findall(r"\[.*?\]\(.*?\)", content)
-        code_blocks = re.findall(r"```", content)
-        words = content.split()
+    def _build_enhanced_toc(
+        self,
+        content: str,
+        header_matches: list,
+    ) -> Tuple[List[TocEntry], List[str]]:
+        """Build ToC with preview and annotation for each section."""
+        entries: List[TocEntry] = []
+        section_bodies: List[str] = []
 
-        stats = {
-            "link_count": len(links),
-            "code_block_count": len(code_blocks) // 2,
-            "word_count": len(words),
-            "approx_tokens": int(len(words) * 1.3),
-        }
+        for i, match in enumerate(header_matches):
+            level = len(match.group(1))
+            title = match.group(2).strip()
 
-        # --- Chunks: split by top-level headers ---
-        chunks = self._split_by_headers(content, toc_entries)
+            # Section body = text between this header and the next (or EOF)
+            body_start = match.end()
+            body_end = (
+                header_matches[i + 1].start()
+                if i + 1 < len(header_matches)
+                else len(content)
+            )
+            body = content[body_start:body_end]
+            section_bodies.append(body)
 
-        return ProbeResult(
-            filename=Path(file_path).name,
-            file_type="markdown",
-            topic=topic,
-            structure=structure,
-            stats=stats,
-            chunks=chunks,
-            raw_snippet=content[:500],
-        )
+            preview = extract_preview(body)
+            annotation = _annotate_section(body)
+
+            entries.append(
+                TocEntry(
+                    level=level,
+                    title=title,
+                    preview=preview,
+                    annotation=annotation,
+                )
+            )
+
+        return entries, section_bodies
 
     def _split_by_headers(
-        self, content: str, toc_entries: List[TocEntry]
+        self, content: str, header_matches: list
     ) -> List[Chunk]:
-        """Split content by top-level headers so each chunk has section context."""
-        header_pattern = re.compile(r"^(#{1,6})\s+(.*)$", re.MULTILINE)
-        matches = list(header_pattern.finditer(content))
-
-        if not matches:
+        """Split content by headers so each chunk has section context."""
+        if not header_matches:
             return [Chunk(content=content, index=0)]
 
-        chunks = []
+        chunks: List[Chunk] = []
+
         # Content before first header
-        pre = content[: matches[0].start()].strip()
+        pre = content[: header_matches[0].start()].strip()
         if pre:
             chunks.append(Chunk(content=pre, index=0, section="preamble"))
 
-        for i, match in enumerate(matches):
+        for i, match in enumerate(header_matches):
             start = match.start()
-            end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+            end = (
+                header_matches[i + 1].start()
+                if i + 1 < len(header_matches)
+                else len(content)
+            )
             section_text = content[start:end].strip()
             section_title = match.group(2).strip()
             if section_text:

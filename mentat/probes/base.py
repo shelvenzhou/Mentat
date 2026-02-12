@@ -17,6 +17,8 @@ class TocEntry(BaseModel):
     level: int = 1
     title: str = ""
     page: Optional[int] = None  # For page-based formats (PDF)
+    preview: Optional[str] = None  # First sentence / key phrase of the section
+    annotation: Optional[str] = None  # Structural features, e.g. "List, 8 items"
 
 
 class Caption(BaseModel):

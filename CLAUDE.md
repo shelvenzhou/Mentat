@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Mentat is a next-generation Agentic RAG system (Python 3.10+) that transforms "Content Retrieval" into "Strategy Retrieval." Instead of feeding raw documents to an LLM, Mentat uses statistical probes to extract structure/metadata, then a Librarian LLM generates actionable reading guides.
+Mentat is a next-generation Agentic RAG system (Python 3.10+) that transforms "Content Retrieval" into "Strategy Retrieval." Instead of feeding raw documents to an LLM, Mentat uses statistical probes to extract **semantic fingerprints** (hierarchy + metadata + anchors + snippets), then a Librarian LLM generates actionable reading guides. Small files (< 1000 tokens) bypass skeleton extraction and return full content directly.
 
 ## Development Setup
 
@@ -12,7 +12,10 @@ Mentat is a next-generation Agentic RAG system (Python 3.10+) that transforms "C
 # Package manager: uv
 uv sync          # Install all dependencies
 
-# CLI entry point
+# CLI entry point (preferred way to run)
+uv run python -m mentat.cli [COMMAND]
+
+# Or after install:
 mentat --debug [COMMAND]
 ```
 
@@ -42,14 +45,30 @@ Three-layer design where each layer feeds into the next:
 - `ContentHashCache` — SHA-256 deduplication to skip re-indexing identical files
 - `CollectionStore` — named groups of doc_id references (JSON-backed, no vector duplication)
 
-**Layer 2 — Probes (Statistical Extraction):** `mentat/probes/`
+**Layer 2 — Probes (Semantic Fingerprinting):** `mentat/probes/`
 - `BaseProbe` ABC with `can_handle()` and `run()` → returns `ProbeResult`
-- Registry in `__init__.py` — probes tried in order, first match wins
-- Implementations: PDF (pymupdf font analysis), CSV (pandas), JSON (schema inference), Python (tree-sitter AST), Markdown (regex), Web/HTML (trafilatura)
+- Registry in `__init__.py` — 13 probes tried in order, first match wins
+- Shared utilities in `_utils.py` — `estimate_tokens`, `should_bypass`, `extract_preview`, `safe_read_text`
+- `TocEntry` fields: `level`, `title`, `page`, `preview` (first sentence), `annotation` (structural features)
+- Probes:
+  - **PDF** (`pdf_probe.py`) — pymupdf font analysis, native + inferred ToC, per-page chunks
+  - **Image** (`image_probe.py`) — Pillow; dimensions, format, EXIF (camera, GPS, date). Optional dep.
+  - **Word** (`docx_probe.py`) — python-docx; heading hierarchy, tables, metadata, section chunks. Optional dep.
+  - **PowerPoint** (`pptx_probe.py`) — python-pptx; slide titles, bullets, notes, image/table counts. Optional dep.
+  - **Calendar** (`calendar_probe.py`) — icalendar; events, recurrence, attendees, time range. Optional dep.
+  - **Archive** (`archive_probe.py`) — stdlib zipfile/tarfile; directory tree, file type distribution, size stats
+  - **CSV** (`csv_probe.py`) — pandas; column types, cardinality, null rates, representative rows
+  - **JSON** (`json_probe.py`) — stdlib; depth-limited schema tree, per-key chunks, value previews
+  - **Config** (`config_probe.py`) — pyyaml/tomli/configparser; key hierarchy, value types (.yaml/.toml/.ini/.conf/.cfg)
+  - **Code** (`code_probe.py`) — tree-sitter; Python + JS + TS; imports, classes, functions, signatures, docstrings
+  - **Log** (`log_probe.py`) — regex; time range, error level stats, format detection, keywords (.log)
+  - **Markdown** (`markdown_probe.py`) — regex; heading hierarchy with preview/annotation, section-aware chunks
+  - **Web/HTML** (`web_probe.py`) — trafilatura + regex; heading structure, meta tags, semantic elements
 
 **Layer 3 — Librarian (Instruction Generation):** `mentat/librarian/`
 - Uses `litellm` for LLM calls (supports OpenAI, Claude, Gemini, Ollama, etc.)
 - Takes **only** `ProbeResult` as input — never reads raw files
+- Renders ToC with preview/annotation; detects `is_full_content` flag for small files
 - Generates brief intro + actionable instructions ("Reading Guides")
 
 **Orchestrator:** `mentat/core/hub.py`
@@ -64,9 +83,11 @@ Three-layer design where each layer feeds into the next:
 
 ## Key Patterns
 
-- **Pydantic v2** for all data models (`ProbeResult`, `TopicInfo`, `StructureInfo`, `Chunk`, `MentatResult`)
+- **Pydantic v2** for all data models (`ProbeResult`, `TopicInfo`, `StructureInfo`, `Chunk`, `TocEntry`, `MentatResult`)
 - **Async/await** for all LLM and embedding calls via `litellm`
 - **Plugin registry** for probes — add new format support by implementing `BaseProbe` and registering in `mentat/probes/__init__.py`
+- **Graceful degradation** — optional probes (Image, DOCX, PPTX, Calendar) use try/except imports; missing deps disable the probe silently
+- **Small-file bypass** — files under ~1000 tokens return full content in a single chunk (`stats.is_full_content = True`)
 - **Adaptor hooks** (`mentat/adaptors/`) — `BaseAdaptor` interface with `on_document_indexed`, `on_search_results`, `transform_query`
 - **Collections** — named doc groups for scoped search; shared storage with doc_id references (no vector duplication); LanceDB `WHERE doc_id IN (...)` pre-filtering with BTREE scalar index
 - **Telemetry** (`mentat/core/telemetry.py`) — context-manager-based timing, tracks probe/librarian time, tokens, and context savings
