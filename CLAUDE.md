@@ -12,6 +12,9 @@ Mentat is a next-generation Agentic RAG system (Python 3.10+) that transforms "C
 # Package manager: uv
 uv sync          # Install all dependencies
 
+# Configuration: copy .env.example → .env and set API keys / model names
+cp .env.example .env   # then edit .env
+
 # CLI entry point (preferred way to run)
 uv run python -m mentat.cli [COMMAND]
 
@@ -48,7 +51,7 @@ Three-layer design where each layer feeds into the next:
 **Layer 2 — Probes (Semantic Fingerprinting):** `mentat/probes/`
 - `BaseProbe` ABC with `can_handle()` and `run()` → returns `ProbeResult`
 - Registry in `__init__.py` — 13 probes tried in order, first match wins
-- Shared utilities in `_utils.py` — `estimate_tokens`, `should_bypass`, `extract_preview`, `safe_read_text`
+- Shared utilities in `_utils.py` — `estimate_tokens`, `should_bypass`, `extract_preview`, `safe_read_text`, `merge_small_chunks`
 - `TocEntry` fields: `level`, `title`, `page`, `preview` (first sentence), `annotation` (structural features)
 - Probes:
   - **PDF** (`pdf_probe.py`) — pymupdf font analysis, native + inferred ToC, per-page chunks
@@ -62,20 +65,24 @@ Three-layer design where each layer feeds into the next:
   - **Config** (`config_probe.py`) — pyyaml/tomli/configparser; key hierarchy, value types (.yaml/.toml/.ini/.conf/.cfg)
   - **Code** (`code_probe.py`) — tree-sitter; Python + JS + TS; imports, classes, functions, signatures, docstrings
   - **Log** (`log_probe.py`) — regex; time range, error level stats, format detection, keywords (.log)
-  - **Markdown** (`markdown_probe.py`) — regex; heading hierarchy with preview/annotation, section-aware chunks
+  - **Markdown** (`markdown_probe.py`) — regex; heading hierarchy with preview/annotation, section-aware chunks. Code-fence-aware header detection filters out `#` comments inside fenced blocks.
   - **Web/HTML** (`web_probe.py`) — trafilatura + regex; heading structure, meta tags, semantic elements
 
-**Layer 3 — Librarian (Instruction Generation):** `mentat/librarian/`
+**Layer 3 — Librarian (Two-Phase Instruction Generation):** `mentat/librarian/`
 - Uses `litellm` for LLM calls (supports OpenAI, Claude, Gemini, Ollama, etc.)
 - Takes **only** `ProbeResult` as input — never reads raw files
-- Renders ToC with preview/annotation; detects `is_full_content` flag for small files
-- Generates brief intro + actionable instructions ("Reading Guides")
+- **Phase 1 — Chunk Summarisation** (`summary_model`): fast/cheap LLM generates a 1-3 sentence summary for each chunk (batched, concurrent). Small files (`is_full_content`) bypass summarisation. Embeddings are also computed concurrently.
+- **Phase 2 — Instruction Generation** (`instruction_model`): smart LLM receives ToC + chunk summaries + statistics and produces:
+  - `brief_intro`: 1-2 sentence overview
+  - `instructions`: actionable reading guide noting what data is present, what is missing/truncated, and how to access the raw file for details
+- Chunk summaries are stored alongside chunks in the vector DB for retrieval
+- Original raw files are always kept in `LocalFileStore` for downstream detailed access
 
 **Orchestrator:** `mentat/core/hub.py`
 - `Mentat` class — singleton via `get_instance()`, reset with `reset()`
 - `Collection` class — thin wrapper for scoped add/search over a named doc group
-- `MentatConfig` dataclass — db_path, models, vector dimensions
-- Pipeline: `add()` runs probe → librarian → embed → store
+- `MentatConfig` dataclass — loads from `.env` via `python-dotenv`, with `MENTAT_` prefixed env vars
+- Pipeline: `add()` runs probe → summarise chunks → generate guide → embed → store
 
 **Public API:** `mentat/__init__.py`
 - Module-level functions: `add()`, `search()`, `probe()`, `inspect()`, `stats()`, `collection()`, `collections()`, `configure()`
@@ -88,6 +95,8 @@ Three-layer design where each layer feeds into the next:
 - **Plugin registry** for probes — add new format support by implementing `BaseProbe` and registering in `mentat/probes/__init__.py`
 - **Graceful degradation** — optional probes (Image, DOCX, PPTX, Calendar) use try/except imports; missing deps disable the probe silently
 - **Small-file bypass** — files under ~1000 tokens return full content in a single chunk (`stats.is_full_content = True`)
+- **Chunk merging** — `merge_small_chunks()` in `_utils.py` post-processes probe output to merge adjacent small chunks (< 300 tokens) while respecting H1/H2 hard boundaries (max merged size: 1200 tokens). Hierarchy levels are communicated via `chunk.metadata["level"]`. Applied by markdown, web, docx, and json probes. ToC entries remain granular; only chunks are merged. Code and PDF probes are exempt (semantically distinct units / page boundaries).
 - **Adaptor hooks** (`mentat/adaptors/`) — `BaseAdaptor` interface with `on_document_indexed`, `on_search_results`, `transform_query`
 - **Collections** — named doc groups for scoped search; shared storage with doc_id references (no vector duplication); LanceDB `WHERE doc_id IN (...)` pre-filtering with BTREE scalar index
-- **Telemetry** (`mentat/core/telemetry.py`) — context-manager-based timing, tracks probe/librarian time, tokens, and context savings
+- **Telemetry** (`mentat/core/telemetry.py`) — context-manager-based timing, tracks probe/summarize/librarian time, tokens, and context savings
+- **Environment config** — `.env` file loaded at import via `python-dotenv`; `MentatConfig` resolves: explicit arg > env var (`MENTAT_*`) > default. Separate `api_key`/`api_base` for summary model (`MENTAT_SUMMARY_*`), instruction model (`MENTAT_INSTRUCTION_*`), and embedding model (`MENTAT_EMBEDDING_*`); instruction model falls back to summary model when not set. Global provider keys (`OPENAI_API_KEY`, etc.) are read natively by `litellm` as fallback. Vector dimension is auto-detected from the first embedding call (lazy chunks table creation).

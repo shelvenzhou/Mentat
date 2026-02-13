@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.3.1",
+    "python-dotenv>=1.0.0",
     "icalendar>=6.0.0",
     "lancedb>=0.29.2",
     "litellm>=1.81.9",
@@ -33,7 +34,11 @@ dependencies = [
 [project.scripts]
 mentat = "mentat.cli:cli"
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "pytest-asyncio>=1.0.0",
 ]

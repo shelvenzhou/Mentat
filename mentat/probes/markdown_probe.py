@@ -9,7 +9,7 @@ from mentat.probes.base import (
     TocEntry,
     Chunk,
 )
-from mentat.probes._utils import estimate_tokens, extract_preview, SMALL_FILE_TOKENS
+from mentat.probes._utils import estimate_tokens, extract_preview, merge_small_chunks, SMALL_FILE_TOKENS
 
 # If heading density exceeds this AND tokens < _DENSITY_TOKEN_CAP, return full content.
 _HEADING_DENSITY_THRESHOLD = 0.25
@@ -19,6 +19,32 @@ _LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+", re.MULTILINE)
 _CODE_FENCE_RE = re.compile(r"^```", re.MULTILINE)
 _LINK_RE = re.compile(r"\[.*?\]\(.*?\)")
 _HEADER_RE = re.compile(r"^(#{1,6})\s+(.*)$", re.MULTILINE)
+
+
+def _code_fence_ranges(content: str) -> List[Tuple[int, int]]:
+    """Return (start, end) character ranges for fenced code blocks."""
+    ranges = []
+    it = _CODE_FENCE_RE.finditer(content)
+    for m in it:
+        open_pos = m.start()
+        close = next(it, None)
+        if close:
+            ranges.append((open_pos, close.end()))
+        else:
+            # Unclosed fence: treat rest of file as code
+            ranges.append((open_pos, len(content)))
+    return ranges
+
+
+def _filter_headers(content: str, header_matches: list) -> list:
+    """Remove header matches that fall inside fenced code blocks."""
+    ranges = _code_fence_ranges(content)
+    if not ranges:
+        return header_matches
+    return [
+        m for m in header_matches
+        if not any(start <= m.start() < end for start, end in ranges)
+    ]
 
 
 def _annotate_section(section_body: str) -> Optional[str]:
@@ -59,8 +85,8 @@ class MarkdownProbe(BaseProbe):
         words = content.split()
         approx_tokens = estimate_tokens(content)
 
-        # --- Collect raw header matches for section boundary detection ---
-        header_matches = list(_HEADER_RE.finditer(content))
+        # --- Collect raw header matches, excluding code blocks ---
+        header_matches = _filter_headers(content, list(_HEADER_RE.finditer(content)))
 
         # --- Basic stats (computed regardless of path) ---
         links = _LINK_RE.findall(content)
@@ -196,7 +222,7 @@ class MarkdownProbe(BaseProbe):
     def _split_by_headers(
         self, content: str, header_matches: list
     ) -> List[Chunk]:
-        """Split content by headers so each chunk has section context."""
+        """Split content by headers, then merge small adjacent chunks."""
         if not header_matches:
             return [Chunk(content=content, index=0)]
 
@@ -205,7 +231,7 @@ class MarkdownProbe(BaseProbe):
         # Content before first header
         pre = content[: header_matches[0].start()].strip()
         if pre:
-            chunks.append(Chunk(content=pre, index=0, section="preamble"))
+            chunks.append(Chunk(content=pre, index=0, section="preamble", metadata={"level": 0}))
 
         for i, match in enumerate(header_matches):
             start = match.start()
@@ -216,13 +242,15 @@ class MarkdownProbe(BaseProbe):
             )
             section_text = content[start:end].strip()
             section_title = match.group(2).strip()
+            level = len(match.group(1))  # number of # chars
             if section_text:
                 chunks.append(
                     Chunk(
                         content=section_text,
                         index=len(chunks),
                         section=section_title,
+                        metadata={"level": level},
                     )
                 )
 
-        return chunks
+        return merge_small_chunks(chunks)

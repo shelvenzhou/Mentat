@@ -1,6 +1,9 @@
 """Shared utilities for all probes."""
 
-from typing import Optional
+from typing import Any, Dict, FrozenSet, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mentat.probes.base import Chunk
 
 # Threshold below which probes should return full content instead of a skeleton.
 SMALL_FILE_TOKENS = 1000
@@ -56,3 +59,118 @@ def format_size(size_bytes: int) -> str:
             return f"{size_bytes:.1f} {unit}" if unit != "B" else f"{size_bytes} {unit}"
         size_bytes /= 1024
     return f"{size_bytes:.1f} TB"
+
+
+# ---------------------------------------------------------------------------
+# Chunk merging
+# ---------------------------------------------------------------------------
+
+MIN_CHUNK_TOKENS = 300  # Chunks below this are candidates for merging
+MAX_CHUNK_TOKENS = 1200 # Merged chunk should not exceed this
+
+
+def merge_small_chunks(
+    chunks: List["Chunk"],
+    min_tokens: int = MIN_CHUNK_TOKENS,
+    max_tokens: int = MAX_CHUNK_TOKENS,
+    hard_boundary_levels: FrozenSet[int] = frozenset({1, 2}),
+) -> List["Chunk"]:
+    """Merge adjacent small chunks, respecting hierarchical boundaries.
+
+    After structural splitting, probes often produce many tiny chunks
+    (one per heading section).  This merges adjacent chunks whose token
+    count is below *min_tokens*, provided:
+
+    1. The merged result would not exceed *max_tokens*.
+    2. Neither chunk sits at a "hard boundary" level (default: H1/H2).
+
+    Hierarchy is read from ``chunk.metadata["level"]``.  Chunks without
+    a level (e.g. JSON) use purely size-based merging.
+
+    Returns a new list with fresh sequential ``index`` values.
+    """
+    from mentat.probes.base import Chunk
+
+    if len(chunks) <= 1:
+        return list(chunks)
+
+    merged: List[Chunk] = []
+
+    # Accumulator state
+    acc_parts: List[str] = []
+    acc_tokens: int = 0
+    acc_section: Optional[str] = None
+    acc_page: Optional[int] = None
+    acc_meta: Dict[str, Any] = {}
+
+    def _flush() -> None:
+        nonlocal acc_parts, acc_tokens, acc_section, acc_page, acc_meta
+        if acc_parts:
+            merged.append(
+                Chunk(
+                    content="\n\n".join(acc_parts),
+                    index=len(merged),
+                    section=acc_section,
+                    page=acc_page,
+                    metadata=acc_meta,
+                )
+            )
+            acc_parts = []
+            acc_tokens = 0
+            acc_section = None
+            acc_page = None
+            acc_meta = {}
+
+    def _is_hard(chunk: "Chunk") -> bool:
+        level = chunk.metadata.get("level")
+        return level is not None and level in hard_boundary_levels
+
+    for chunk in chunks:
+        tok = estimate_tokens(chunk.content)
+
+        # Hard boundary: always flush previous, start fresh
+        if _is_hard(chunk):
+            _flush()
+            acc_parts = [chunk.content]
+            acc_tokens = tok
+            acc_section = chunk.section
+            acc_page = chunk.page
+            acc_meta = dict(chunk.metadata)
+            # If this chunk is already large enough, flush it immediately
+            if tok >= min_tokens:
+                _flush()
+            continue
+
+        # Empty accumulator: start a new group
+        if not acc_parts:
+            acc_parts = [chunk.content]
+            acc_tokens = tok
+            acc_section = chunk.section
+            acc_page = chunk.page
+            acc_meta = dict(chunk.metadata)
+            continue
+
+        combined = acc_tokens + tok
+
+        # Accumulator is small — try to pull in more content
+        if acc_tokens < min_tokens and combined <= max_tokens:
+            acc_parts.append(chunk.content)
+            acc_tokens = combined
+            continue
+
+        # Current chunk is small — merge it into the accumulator if it fits
+        if tok < min_tokens and combined <= max_tokens:
+            acc_parts.append(chunk.content)
+            acc_tokens = combined
+            continue
+
+        # Can't merge: flush and start new group
+        _flush()
+        acc_parts = [chunk.content]
+        acc_tokens = tok
+        acc_section = chunk.section
+        acc_page = chunk.page
+        acc_meta = dict(chunk.metadata)
+
+    _flush()
+    return merged

@@ -1,8 +1,13 @@
 import asyncio
 import json
 import logging
+import warnings
 
 import click
+
+# litellm creates fire-and-forget async logging coroutines that get
+# cancelled when asyncio.run() tears down the event loop.  Harmless.
+warnings.filterwarnings("ignore", message="coroutine.*was never awaited")
 
 from mentat.core.hub import Mentat
 
@@ -60,6 +65,8 @@ def search(query, top_k, hybrid, coll_name):
         click.echo(f"  Score: {res.score:.4f}")
         click.echo(f"  Intro: {res.brief_intro}")
         click.echo(f"  Guide: {res.instructions}")
+        if res.summary:
+            click.echo(f"  Summary: {res.summary}")
         if res.content:
             preview = res.content[:200].replace("\n", " ")
             click.echo(f"  Content: {preview}...")
@@ -102,6 +109,17 @@ def inspect(doc_id):
         stats = probe.get("stats", {})
         if stats:
             click.echo(f"    Stats: {json.dumps(stats, indent=6, default=str)}")
+
+    # Chunk summaries
+    chunk_summaries = info.get("chunk_summaries")
+    if chunk_summaries:
+        click.echo(f"\n{'─' * 60}")
+        click.echo(f"  Chunk Summaries ({len(chunk_summaries)}):")
+        for cs in chunk_summaries[:15]:
+            idx = cs.get("index", "?")
+            sec = f" [{cs['section']}]" if cs.get("section") else ""
+            summary = cs.get("summary", "")[:120]
+            click.echo(f"    [{idx}]{sec}: {summary}")
 
 
 @cli.command()

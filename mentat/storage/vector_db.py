@@ -1,6 +1,6 @@
 import lancedb
 import pyarrow as pa
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 
 
 # Schema for document-level metadata (stubs)
@@ -14,51 +14,70 @@ STUBS_SCHEMA = pa.schema(
     ]
 )
 
-# Schema for chunk-level data with vectors
-CHUNKS_SCHEMA = pa.schema(
-    [
-        pa.field("chunk_id", pa.string()),
-        pa.field("doc_id", pa.string()),  # Foreign key to stubs
-        pa.field("filename", pa.string()),
-        pa.field("content", pa.string()),
-        pa.field("section", pa.string()),
-        pa.field("chunk_index", pa.int32()),
-        pa.field(
-            "vector", pa.list_(pa.float32(), 1536)
-        ),  # Dimension configurable later
-    ]
-)
-
 
 class LanceDBStorage:
     """Storage layer using LanceDB for vector search and FTS.
-    Stores document stubs (metadata) and chunks (content + vectors) in separate tables.
+
+    Stores document stubs (metadata) and chunks (content + vectors) in
+    separate tables.  The chunks table is created **lazily** on the first
+    ``add_chunks`` call so the vector dimension is inferred from the actual
+    embedding output — no upfront configuration needed.
     """
 
-    def __init__(self, db_path: str = "./mentat_db", vector_dim: int = 1536):
+    def __init__(self, db_path: str = "./mentat_db"):
         self.db_path = db_path
-        self.vector_dim = vector_dim
         self.db = lancedb.connect(db_path)
         self.stubs_table = self._get_or_create_table("stubs", STUBS_SCHEMA)
-        self.chunks_table = self._get_or_create_table(
-            "chunks", self._chunks_schema(vector_dim)
-        )
+        # Opened lazily — see _ensure_chunks_table()
+        self._chunks_table = None
 
-    def _chunks_schema(self, dim: int) -> pa.Schema:
-        return pa.schema(
+    def _table_names(self) -> Set[str]:
+        """Return existing table names as a set of strings.
+
+        Handles both old (``table_names`` → List[str]) and new
+        (``list_tables`` → List[TableInfo]) lancedb APIs.
+        """
+        try:
+            raw = self.db.table_names()
+        except AttributeError:
+            raw = self.db.list_tables()
+        # Normalise: entries may be strings or objects with a .name attr
+        names: Set[str] = set()
+        for item in raw:
+            names.add(item if isinstance(item, str) else str(item))
+        return names
+
+    @property
+    def chunks_table(self):
+        """Return the chunks table, opening an existing one if needed."""
+        if self._chunks_table is None:
+            if "chunks" in self._table_names():
+                self._chunks_table = self.db.open_table("chunks")
+        return self._chunks_table
+
+    def _ensure_chunks_table(self, vector_dim: int):
+        """Create the chunks table if it doesn't exist yet."""
+        if self._chunks_table is not None:
+            return
+        if "chunks" in self._table_names():
+            self._chunks_table = self.db.open_table("chunks")
+            return
+        schema = pa.schema(
             [
                 pa.field("chunk_id", pa.string()),
                 pa.field("doc_id", pa.string()),
                 pa.field("filename", pa.string()),
                 pa.field("content", pa.string()),
+                pa.field("summary", pa.string()),
                 pa.field("section", pa.string()),
                 pa.field("chunk_index", pa.int32()),
-                pa.field("vector", pa.list_(pa.float32(), dim)),
+                pa.field("vector", pa.list_(pa.float32(), vector_dim)),
             ]
         )
+        self._chunks_table = self.db.create_table("chunks", schema=schema)
 
     def _get_or_create_table(self, name: str, schema: pa.Schema):
-        if name in self.db.table_names():
+        if name in self._table_names():
             return self.db.open_table(name)
         return self.db.create_table(name, schema=schema)
 
@@ -94,9 +113,16 @@ class LanceDBStorage:
     # --- Chunk-level operations ---
 
     def add_chunks(self, chunks: List[Dict[str, Any]]):
-        """Store multiple chunks with their vectors."""
-        if chunks:
-            self.chunks_table.add(chunks)
+        """Store multiple chunks with their vectors.
+
+        On the first call the chunks table is created with the vector
+        dimension inferred from the data.
+        """
+        if not chunks:
+            return
+        vector_dim = len(chunks[0]["vector"])
+        self._ensure_chunks_table(vector_dim)
+        self.chunks_table.add(chunks)
 
     def search(
         self,
@@ -146,6 +172,20 @@ class LanceDBStorage:
             self.chunks_table.create_index("doc_id", index_type="BTREE")
         except Exception:
             pass  # Index may already exist
+
+    def get_chunks_by_doc(self, doc_id: str) -> List[Dict[str, Any]]:
+        """Retrieve all chunks for a document, ordered by chunk_index."""
+        try:
+            rows = (
+                self.chunks_table.search()
+                .where(f"doc_id = '{doc_id}'")
+                .limit(10000)
+                .to_list()
+            )
+            rows.sort(key=lambda r: r.get("chunk_index", 0))
+            return rows
+        except Exception:
+            return []
 
     def count_docs(self) -> int:
         """Count total indexed documents."""

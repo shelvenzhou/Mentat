@@ -4,11 +4,21 @@ from typing import Dict, Optional
 from pydantic import BaseModel
 
 
+def _fmt_time(ms: float) -> str:
+    """Format milliseconds into a human-readable string."""
+    if ms < 1000:
+        return f"{ms:.0f}ms"
+    return f"{ms / 1000:.1f}s"
+
+
 class TelemetryStats(BaseModel):
     probe_time_ms: float = 0.0
+    summarize_time_ms: float = 0.0
     librarian_time_ms: float = 0.0
-    total_tokens: int = 0.0
+    embedding_time_ms: float = 0.0
+    total_tokens: int = 0
     saved_context_ratio: float = 0.0
+    num_chunks: int = 0
 
 
 class Telemetry:
@@ -27,8 +37,12 @@ class Telemetry:
 
         if phase == "probe":
             cls._stats[doc_id].probe_time_ms += duration_ms
+        elif phase == "summarize":
+            cls._stats[doc_id].summarize_time_ms += duration_ms
         elif phase == "librarian":
             cls._stats[doc_id].librarian_time_ms += duration_ms
+        elif phase == "embedding":
+            cls._stats[doc_id].embedding_time_ms += duration_ms
 
     @classmethod
     def record_tokens(cls, doc_id: str, tokens: int):
@@ -43,6 +57,12 @@ class Telemetry:
         cls._stats[doc_id].saved_context_ratio = ratio
 
     @classmethod
+    def record_chunks(cls, doc_id: str, num_chunks: int):
+        if doc_id not in cls._stats:
+            cls._stats[doc_id] = TelemetryStats()
+        cls._stats[doc_id].num_chunks = num_chunks
+
+    @classmethod
     def get_stats(cls, doc_id: str) -> Optional[TelemetryStats]:
         return cls._stats.get(doc_id)
 
@@ -52,9 +72,21 @@ class Telemetry:
         if not stats:
             return "No stats recorded."
 
-        return (
-            f"[Stats] Probed: {stats.probe_time_ms:.1f}ms | "
-            f"Librarian: {stats.librarian_time_ms:.1f}ms | "
-            f"Tokens: {stats.total_tokens} | "
-            f"Saved: {stats.saved_context_ratio*100:.1f}% context"
+        total = (
+            stats.probe_time_ms
+            + stats.summarize_time_ms
+            + stats.librarian_time_ms
+            + stats.embedding_time_ms
         )
+
+        lines = [
+            f"[Stats] {stats.num_chunks} chunks | "
+            f"{stats.total_tokens} tokens | "
+            f"Saved: {stats.saved_context_ratio * 100:.1f}% context",
+            f"  Probe:       {_fmt_time(stats.probe_time_ms)}",
+            f"  Summarize:   {_fmt_time(stats.summarize_time_ms)}",
+            f"  Instruction: {_fmt_time(stats.librarian_time_ms)}",
+            f"  Embedding:   {_fmt_time(stats.embedding_time_ms)}",
+            f"  Total:       {_fmt_time(total)}",
+        ]
+        return "\n".join(lines)

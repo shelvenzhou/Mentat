@@ -1,11 +1,14 @@
-import logging
-import uuid
+import asyncio
 import json
+import logging
 import os
+import uuid
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
 from pydantic import BaseModel
+
+from dotenv import load_dotenv
 
 from mentat.core.telemetry import Telemetry
 from mentat.core.embeddings import EmbeddingRegistry
@@ -18,6 +21,10 @@ from mentat.storage.cache import ContentHashCache
 from mentat.storage.collections import CollectionStore
 from mentat.adaptors import BaseAdaptor
 
+# Load .env at import time so all env vars (including API keys for litellm)
+# are available before any LLM/embedding calls.
+load_dotenv()
+
 
 class MentatResult(BaseModel):
     """A search result returned by Mentat."""
@@ -27,6 +34,7 @@ class MentatResult(BaseModel):
     filename: str
     section: Optional[str] = None
     content: str = ""
+    summary: str = ""
     brief_intro: str = ""
     instructions: str = ""
     score: float = 0.0
@@ -34,14 +42,74 @@ class MentatResult(BaseModel):
 
 @dataclass
 class MentatConfig:
-    """Configuration for Mentat instance."""
+    """Configuration for Mentat instance.
 
-    db_path: str = "./mentat_db"
-    storage_dir: str = "./mentat_files"
-    embedding_provider: str = "litellm"
-    embedding_model: str = "text-embedding-3-small"
-    librarian_model: str = "gpt-4o"
-    vector_dim: int = 1536
+    Values are resolved in order: explicit argument > environment variable > default.
+    Environment variables use the ``MENTAT_`` prefix (see .env.example).
+    """
+
+    # Storage
+    db_path: str = ""
+    storage_dir: str = ""
+
+    # Summary model — Phase 1: bulk chunk summarisation (use a fast/cheap model)
+    summary_model: str = ""
+    summary_api_key: str = ""
+    summary_api_base: str = ""
+
+    # Instruction model — Phase 2: document-level reading guide (use a smart model)
+    instruction_model: str = ""
+    instruction_api_key: str = ""
+    instruction_api_base: str = ""
+
+    # Embedding model
+    embedding_provider: str = ""
+    embedding_model: str = ""
+    embedding_api_key: str = ""
+    embedding_api_base: str = ""
+
+    def __post_init__(self):
+        self.db_path = self.db_path or os.getenv("MENTAT_DB_PATH", "./mentat_db")
+        self.storage_dir = self.storage_dir or os.getenv(
+            "MENTAT_STORAGE_DIR", "./mentat_files"
+        )
+
+        # Phase 1: Summary model (fast/cheap — bulk chunk summarisation)
+        self.summary_model = self.summary_model or os.getenv(
+            "MENTAT_SUMMARY_MODEL", "gpt-4o-mini"
+        )
+        self.summary_api_key = self.summary_api_key or os.getenv(
+            "MENTAT_SUMMARY_API_KEY", ""
+        )
+        self.summary_api_base = self.summary_api_base or os.getenv(
+            "MENTAT_SUMMARY_API_BASE", ""
+        )
+
+        # Phase 2: Instruction model (smart — document-level guide)
+        # Falls back to summary_model if not set.
+        self.instruction_model = self.instruction_model or os.getenv(
+            "MENTAT_INSTRUCTION_MODEL", ""
+        ) or self.summary_model
+        self.instruction_api_key = self.instruction_api_key or os.getenv(
+            "MENTAT_INSTRUCTION_API_KEY", ""
+        ) or self.summary_api_key
+        self.instruction_api_base = self.instruction_api_base or os.getenv(
+            "MENTAT_INSTRUCTION_API_BASE", ""
+        ) or self.summary_api_base
+
+        # Embedding
+        self.embedding_provider = self.embedding_provider or os.getenv(
+            "MENTAT_EMBEDDING_PROVIDER", "litellm"
+        )
+        self.embedding_model = self.embedding_model or os.getenv(
+            "MENTAT_EMBEDDING_MODEL", "text-embedding-3-small"
+        )
+        self.embedding_api_key = self.embedding_api_key or os.getenv(
+            "MENTAT_EMBEDDING_API_KEY", ""
+        )
+        self.embedding_api_base = self.embedding_api_base or os.getenv(
+            "MENTAT_EMBEDDING_API_BASE", ""
+        )
 
 
 class Mentat:
@@ -61,18 +129,26 @@ class Mentat:
         self.logger = logging.getLogger("mentat")
 
         # Layer 1: Storage (Haystack)
-        self.storage = LanceDBStorage(
-            db_path=self.config.db_path, vector_dim=self.config.vector_dim
-        )
+        self.storage = LanceDBStorage(db_path=self.config.db_path)
         self.file_store = LocalFileStore(storage_dir=self.config.storage_dir)
         self.cache = ContentHashCache(cache_dir=self.config.db_path)
 
         # Layer 3: Librarian
-        self.librarian = Librarian(model=self.config.librarian_model)
+        self.librarian = Librarian(
+            model=self.config.instruction_model,
+            summary_model=self.config.summary_model,
+            api_key=self.config.instruction_api_key or None,
+            api_base=self.config.instruction_api_base or None,
+            summary_api_key=self.config.summary_api_key or None,
+            summary_api_base=self.config.summary_api_base or None,
+        )
 
         # Embeddings
         self.embeddings = EmbeddingRegistry.get_provider(
-            self.config.embedding_provider, model=self.config.embedding_model
+            self.config.embedding_provider,
+            model=self.config.embedding_model,
+            api_key=self.config.embedding_api_key or None,
+            api_base=self.config.embedding_api_base or None,
         )
 
         # Collections
@@ -98,10 +174,18 @@ class Mentat:
         self._adaptors.append(adaptor)
 
     async def add(self, path: str, force: bool = False) -> str:
-        """Index a file: probe → librarian → embed → store.
+        """Index a file: probe → summarise chunks → generate guide → embed → store.
 
-        Returns the document ID. Skips processing if an identical file
-        (by content hash) was already indexed, unless force=True.
+        Pipeline:
+          1. Probe (Layer 2) — extract semantic fingerprint, no LLM.
+          2. Chunk summarisation (Librarian phase 1) — LLM summarises each chunk.
+          3. Instruction generation (Librarian phase 2) — LLM writes a reading
+             guide from ToC + chunk summaries + statistics.
+          4. Embed chunks into vector DB.
+          5. Store raw file for future detailed access.
+
+        Returns the document ID.  Skips processing if an identical file
+        (by content hash) was already indexed, unless *force=True*.
         """
         # Check content hash cache
         if not force:
@@ -117,19 +201,61 @@ class Mentat:
         filename = Path(path).name
         self.logger.info(f"Adding file: {path} (ID: {doc_id})")
 
-        # Layer 2: Probe
+        # Layer 2: Probe — extract skeleton (no LLM)
         with Telemetry.time_it(doc_id, "probe"):
             probe_result = run_probe(path)
             probe_result.doc_id = doc_id
 
-        # Layer 3: Librarian — only reads probe results, not the raw file
-        with Telemetry.time_it(doc_id, "librarian"):
-            brief_intro, instructions, tokens = await self.librarian.generate_guide(
-                probe_result
-            )
-            Telemetry.record_tokens(doc_id, tokens)
+        Telemetry.record_chunks(doc_id, len(probe_result.chunks))
 
-        # Store document stub
+        # ── Parallel pipeline ────────────────────────────────────────
+        # Summarization and embedding are independent (both read only
+        # probe_result), so we launch them concurrently.  Once summaries
+        # arrive we kick off instruction generation while embedding may
+        # still be running.
+        #
+        #   Probe → ┬─ Summarize ──→ Instruction ─┬→ Store
+        #           └─ Embedding ──────────────────┘
+
+        async def _summarize():
+            with Telemetry.time_it(doc_id, "summarize"):
+                return await self.librarian.summarize_chunks(probe_result)
+
+        async def _embed():
+            with Telemetry.time_it(doc_id, "embedding"):
+                embed_texts = []
+                for chunk in probe_result.chunks:
+                    text = chunk.content
+                    if chunk.section:
+                        text = f"[{chunk.section}] {text}"
+                    embed_texts.append(text)
+                if not embed_texts:
+                    return []
+                return await self.embeddings.embed_batch(embed_texts)
+
+        # Start both concurrently
+        summarize_task = asyncio.create_task(_summarize())
+        embed_task = asyncio.create_task(_embed())
+
+        # Wait for summaries → kick off instruction generation
+        chunk_summaries = await summarize_task
+
+        async def _generate_guide():
+            with Telemetry.time_it(doc_id, "librarian"):
+                intro, instr, tokens = await self.librarian.generate_guide(
+                    probe_result, chunk_summaries=chunk_summaries
+                )
+                Telemetry.record_tokens(doc_id, tokens)
+                return intro, instr
+
+        guide_task = asyncio.create_task(_generate_guide())
+
+        # Wait for remaining tasks
+        vectors = await embed_task
+        brief_intro, instructions = await guide_task
+
+        # ── Store results ────────────────────────────────────────────
+
         self.storage.add_stub(
             doc_id=doc_id,
             filename=filename,
@@ -138,21 +264,17 @@ class Mentat:
             probe_json=json.dumps(probe_result.model_dump(), default=str),
         )
 
-        # Embed and store chunks
         chunk_records = []
-        for chunk in probe_result.chunks:
-            # Embed each chunk with its section context
-            embed_text = chunk.content
-            if chunk.section:
-                embed_text = f"[{chunk.section}] {embed_text}"
-            vector = await self.embeddings.embed(embed_text)
-
+        for chunk, summary, vector in zip(
+            probe_result.chunks, chunk_summaries, vectors
+        ):
             chunk_records.append(
                 {
                     "chunk_id": f"{doc_id}_{chunk.index}",
                     "doc_id": doc_id,
                     "filename": filename,
                     "content": chunk.content,
+                    "summary": summary,
                     "section": chunk.section or "",
                     "chunk_index": chunk.index,
                     "vector": vector,
@@ -162,7 +284,7 @@ class Mentat:
         if chunk_records:
             self.storage.add_chunks(chunk_records)
 
-        # Raw file storage
+        # Raw file storage — kept for future detailed access
         self.file_store.save(path, doc_id)
 
         # Telemetry
@@ -228,6 +350,7 @@ class Mentat:
                     filename=r.get("filename", ""),
                     section=r.get("section"),
                     content=r.get("content", ""),
+                    summary=r.get("summary", ""),
                     brief_intro=stub.get("brief_intro", ""),
                     instructions=stub.get("instruction", ""),
                     score=r.get("_distance", 0.0),
@@ -242,12 +365,12 @@ class Mentat:
         return results
 
     async def inspect(self, doc_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve full probe results and instructions for a document."""
+        """Retrieve full probe results, instructions, and chunk summaries."""
         stub = self.storage.get_stub(doc_id)
         if not stub:
             return None
 
-        result = {
+        result: Dict[str, Any] = {
             "doc_id": doc_id,
             "filename": stub.get("filename"),
             "brief_intro": stub.get("brief_intro"),
@@ -261,6 +384,18 @@ class Mentat:
                 result["probe"] = json.loads(probe_json)
             except json.JSONDecodeError:
                 pass
+
+        # Fetch stored chunk summaries
+        chunk_rows = self.storage.get_chunks_by_doc(doc_id)
+        if chunk_rows:
+            result["chunk_summaries"] = [
+                {
+                    "index": r.get("chunk_index", 0),
+                    "section": r.get("section", ""),
+                    "summary": r.get("summary", ""),
+                }
+                for r in chunk_rows
+            ]
 
         return result
 

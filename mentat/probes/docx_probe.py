@@ -9,7 +9,7 @@ from mentat.probes.base import (
     TocEntry,
     Chunk,
 )
-from mentat.probes._utils import estimate_tokens, should_bypass, extract_preview
+from mentat.probes._utils import estimate_tokens, should_bypass, extract_preview, merge_small_chunks
 
 try:
     from docx import Document
@@ -201,11 +201,15 @@ class DOCXProbe(BaseProbe):
         chunks: List[Chunk] = []
         for section in sections:
             text = section["title"] + "\n\n" + "\n".join(section["paragraphs"])
+            level = section.get("level", 1)
             chunks.append(
                 Chunk(
                     content=text.strip(),
                     index=len(chunks),
                     section=section["title"],
+                    metadata={"level": level},
                 )
             )
-        return chunks or [Chunk(content="(empty document)", index=0)]
+        if not chunks:
+            return [Chunk(content="(empty document)", index=0)]
+        return merge_small_chunks(chunks)

@@ -11,7 +11,7 @@ from mentat.probes.base import (
     TocEntry,
     Chunk,
 )
-from mentat.probes._utils import estimate_tokens, should_bypass, extract_preview
+from mentat.probes._utils import estimate_tokens, should_bypass, extract_preview, merge_small_chunks
 
 # Regex patterns for HTML structure extraction
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
@@ -258,14 +258,16 @@ class WebProbe(BaseProbe):
 
         # Map heading titles to split positions in the extracted text
         chunks: List[Chunk] = []
-        heading_titles = [e.title for e in toc_entries]
+
+        # Build title → level map from toc_entries
+        title_level = {e.title: e.level for e in toc_entries}
 
         # Try to split the extracted text by finding heading titles within it
         positions = []
-        for title in heading_titles:
-            idx = content_text.find(title)
+        for entry in toc_entries:
+            idx = content_text.find(entry.title)
             if idx >= 0:
-                positions.append((idx, title))
+                positions.append((idx, entry.title, entry.level))
 
         positions.sort()
 
@@ -281,9 +283,9 @@ class WebProbe(BaseProbe):
         if positions[0][0] > 0:
             pre = content_text[: positions[0][0]].strip()
             if pre:
-                chunks.append(Chunk(content=pre, index=0, section="preamble"))
+                chunks.append(Chunk(content=pre, index=0, section="preamble", metadata={"level": 0}))
 
-        for i, (pos, title) in enumerate(positions):
+        for i, (pos, title, level) in enumerate(positions):
             end = positions[i + 1][0] if i + 1 < len(positions) else len(content_text)
             section_text = content_text[pos:end].strip()
             if section_text:
@@ -292,7 +294,9 @@ class WebProbe(BaseProbe):
                         content=section_text,
                         index=len(chunks),
                         section=title,
+                        metadata={"level": level},
                     )
                 )
 
-        return chunks or [Chunk(content=content_text, index=0)]
+        chunks = chunks or [Chunk(content=content_text, index=0)]
+        return merge_small_chunks(chunks)

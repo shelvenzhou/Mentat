@@ -14,6 +14,7 @@ from mentat.probes._utils import (
     should_bypass,
     truncate_string,
     extract_preview,
+    merge_small_chunks,
 )
 
 
@@ -227,4 +228,6 @@ class JSONProbe(BaseProbe):
                 Chunk(content=raw[:2000], index=0, section="root")
             )
 
-        return chunks or [Chunk(content=raw[:2000], index=0, section="root")]
+        if not chunks:
+            return [Chunk(content=raw[:2000], index=0, section="root")]
+        return merge_small_chunks(chunks)
