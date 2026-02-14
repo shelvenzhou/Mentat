@@ -1,5 +1,5 @@
 import abc
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel
 
 
@@ -64,6 +64,10 @@ class ProbeResult(BaseModel):
     # --- Format-aware chunks ---
     chunks: List[Chunk] = []
 
+    # --- Probe-generated instructions (optional, falls back to librarian templates) ---
+    brief_intro: Optional[str] = None
+    instructions: Optional[str] = None
+
     # --- Raw sample for small files ---
     raw_snippet: Optional[str] = None
 
@@ -78,3 +82,18 @@ class BaseProbe(abc.ABC):
     def run(self, file_path: str) -> ProbeResult:
         """Extract statistical and structural data from the file."""
         pass
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate format-specific instructions from probe result.
+
+        Default implementation returns empty strings, signaling that the librarian
+        should use fallback template generation. Override in subclasses for
+        format-specific guidance.
+
+        Args:
+            probe_result: The ProbeResult from run(), with all stats/structure populated
+
+        Returns:
+            (brief_intro, instructions) tuple of strings
+        """
+        return "", ""

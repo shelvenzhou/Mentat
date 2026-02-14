@@ -2,7 +2,7 @@ import fitz  # PyMuPDF
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 from mentat.probes.base import (
     BaseProbe,
     ProbeResult,
@@ -11,6 +11,14 @@ from mentat.probes.base import (
     TocEntry,
     Caption,
     Chunk,
+)
+from mentat.probes.instruction_templates import (
+    PDF_BRIEF_INTRO,
+    PDF_INSTRUCTIONS,
+    PDF_TOC_METHOD_METADATA,
+    PDF_TOC_METHOD_VISUAL,
+    PDF_TOC_SOURCE_METADATA,
+    PDF_TOC_SOURCE_VISUAL,
 )
 
 
@@ -238,7 +246,7 @@ class PDFProbe(BaseProbe):
             "creation_date": metadata.get("creationDate"),
         }
 
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type="pdf",
             topic=topic,
@@ -246,3 +254,28 @@ class PDFProbe(BaseProbe):
             stats=stats,
             chunks=chunks,
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate PDF-specific instructions."""
+        stats = probe_result.stats
+        toc_source = stats.get('toc_source', 'visual_inference')
+
+        # Brief intro
+        toc_method = PDF_TOC_METHOD_METADATA if toc_source == 'metadata' else PDF_TOC_METHOD_VISUAL
+        brief_intro = PDF_BRIEF_INTRO.format(toc_method=toc_method)
+
+        # Full instructions
+        toc_source_desc = PDF_TOC_SOURCE_METADATA if toc_source == 'metadata' else PDF_TOC_SOURCE_VISUAL
+        instructions = PDF_INSTRUCTIONS.format(
+            toc_source=toc_source_desc,
+            filename=probe_result.filename,
+        )
+
+        return brief_intro, instructions

@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from mentat.probes.base import (
     BaseProbe,
     ProbeResult,
@@ -11,6 +11,12 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import estimate_tokens
+from mentat.probes.instruction_templates import (
+    CSV_BRIEF_INTRO,
+    CSV_INSTRUCTIONS,
+    CSV_SAMPLING_NOTE_FULL,
+    CSV_SAMPLING_NOTE_SAMPLED,
+)
 
 
 class CSVProbe(BaseProbe):
@@ -103,7 +109,7 @@ class CSVProbe(BaseProbe):
         if is_small:
             stats["is_full_content"] = True
             full_csv = df.to_csv(index=False)
-            return ProbeResult(
+            result = ProbeResult(
                 filename=Path(file_path).name,
                 file_type="csv",
                 topic=topic,
@@ -119,6 +125,11 @@ class CSVProbe(BaseProbe):
                 ],
                 raw_snippet=full_csv,
             )
+            # Generate format-specific instructions
+            brief_intro, instructions = self.generate_instructions(result)
+            result.brief_intro = brief_intro
+            result.instructions = instructions
+            return result
 
         # --- Representative sampling: first + middle + last row ---
         stats["is_full_content"] = False
@@ -143,7 +154,7 @@ class CSVProbe(BaseProbe):
             )
         ]
 
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type="csv",
             topic=topic,
@@ -152,6 +163,34 @@ class CSVProbe(BaseProbe):
             chunks=chunks,
             raw_snippet=sample_csv,
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate CSV-specific instructions."""
+        stats = probe_result.stats
+
+        # Brief intro
+        brief_intro = CSV_BRIEF_INTRO
+
+        # Sampling strategy description
+        if stats.get('is_full_content'):
+            sampling_strategy = CSV_SAMPLING_NOTE_FULL
+        else:
+            sampling_strategy = CSV_SAMPLING_NOTE_SAMPLED
+
+        # Full instructions
+        instructions = CSV_INSTRUCTIONS.format(
+            sampling_strategy=sampling_strategy,
+            filename=probe_result.filename,
+        )
+
+        return brief_intro, instructions
 
     def _infer_column_types(self, df: pd.DataFrame) -> Dict[str, str]:
         type_map = {}

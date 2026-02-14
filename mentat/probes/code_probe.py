@@ -9,6 +9,10 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import estimate_tokens, should_bypass, extract_preview
+from mentat.probes.instruction_templates import (
+    CODE_BRIEF_INTRO,
+    CODE_INSTRUCTIONS,
+)
 from tree_sitter import Language, Parser
 
 # ---------------------------------------------------------------------------
@@ -130,7 +134,7 @@ class CodeProbe(BaseProbe):
         # --- Small-file bypass ---
         if should_bypass(text):
             stats["is_full_content"] = True
-            return ProbeResult(
+            result = ProbeResult(
                 filename=Path(file_path).name,
                 file_type=lang_info["file_type"],
                 topic=topic,
@@ -139,12 +143,17 @@ class CodeProbe(BaseProbe):
                 chunks=[Chunk(content=text, index=0)],
                 raw_snippet=text,
             )
+            # Generate format-specific instructions
+            brief_intro, instructions = self.generate_instructions(result)
+            result.brief_intro = brief_intro
+            result.instructions = instructions
+            return result
 
         # --- Chunks: one per top-level definition ---
         stats["is_full_content"] = False
         chunks = self._build_chunks(root, text, lang_name)
 
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type=lang_info["file_type"],
             topic=topic,
@@ -153,6 +162,29 @@ class CodeProbe(BaseProbe):
             chunks=chunks,
             raw_snippet=text[:500],
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate code-specific instructions."""
+        stats = probe_result.stats
+        lang = stats['language'].title()  # Python, Javascript, etc.
+
+        # Brief intro
+        brief_intro = CODE_BRIEF_INTRO.format(language=lang)
+
+        # Full instructions
+        instructions = CODE_INSTRUCTIONS.format(
+            language=lang,
+            filename=probe_result.filename,
+        )
+
+        return brief_intro, instructions
 
     # ------------------------------------------------------------------
     # Language detection

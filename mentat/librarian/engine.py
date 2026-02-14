@@ -208,7 +208,17 @@ class Librarian:
 
         Returns ``(brief_intro, instructions)`` based purely on probe metadata.
         This is ~10x faster than LLM-based generation.
+
+        If the probe already generated format-specific instructions, use those
+        instead of the generic fallback templates.
         """
+        # Check for probe-generated instructions first
+        if probe_result.brief_intro and probe_result.instructions:
+            logger.debug(f"Using probe-generated instructions for {probe_result.filename}")
+            return probe_result.brief_intro, probe_result.instructions
+
+        # Fallback to generic template generation
+        logger.debug(f"Using fallback template generation for {probe_result.filename}")
         stats = probe_result.stats
         structure = probe_result.structure
         topic = probe_result.topic

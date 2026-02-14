@@ -1,6 +1,6 @@
 import configparser
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from mentat.probes.base import (
     BaseProbe,
     ProbeResult,
@@ -14,6 +14,13 @@ from mentat.probes._utils import (
     should_bypass,
     safe_read_text,
     truncate_string,
+)
+from mentat.probes.instruction_templates import (
+    CONFIG_BRIEF_INTRO,
+    CONFIG_INSTRUCTIONS,
+    CONFIG_PARSER_YAML,
+    CONFIG_PARSER_TOML,
+    CONFIG_PARSER_INI,
 )
 
 
@@ -73,7 +80,7 @@ class ConfigProbe(BaseProbe):
         # --- Most configs are small, return full content ---
         if should_bypass(content):
             stats["is_full_content"] = True
-            return ProbeResult(
+            result = ProbeResult(
                 filename=Path(file_path).name,
                 file_type="config",
                 topic=topic,
@@ -82,9 +89,13 @@ class ConfigProbe(BaseProbe):
                 chunks=[Chunk(content=content, index=0)],
                 raw_snippet=content,
             )
+            brief_intro, instructions = self.generate_instructions(result)
+            result.brief_intro = brief_intro
+            result.instructions = instructions
+            return result
 
         stats["is_full_content"] = False
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type="config",
             topic=topic,
@@ -93,6 +104,40 @@ class ConfigProbe(BaseProbe):
             chunks=[Chunk(content=content[:2000], index=0, section="root")],
             raw_snippet=content[:500],
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate Config-specific instructions."""
+        stats = probe_result.stats
+        config_format = stats.get('format', 'unknown')
+
+        # Parser info mapping
+        parser_map = {
+            'yaml': CONFIG_PARSER_YAML,
+            'toml': CONFIG_PARSER_TOML,
+            'ini': CONFIG_PARSER_INI,
+        }
+        parser_info = parser_map.get(config_format, 'unknown parser')
+
+        # Brief intro
+        brief_intro = CONFIG_BRIEF_INTRO.format(
+            format=config_format.upper(),
+            parser=parser_info,
+        )
+
+        # Full instructions
+        instructions = CONFIG_INSTRUCTIONS.format(
+            format=config_format.upper(),
+            parser_info=parser_info,
+        )
+
+        return brief_intro, instructions
 
     def _parse_config(self, file_path: str, ext: str):
         if ext in (".yaml", ".yml"):

@@ -1,6 +1,6 @@
 import json as json_module
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from mentat.probes.base import (
     BaseProbe,
     ProbeResult,
@@ -15,6 +15,10 @@ from mentat.probes._utils import (
     truncate_string,
     extract_preview,
     merge_small_chunks,
+)
+from mentat.probes.instruction_templates import (
+    JSON_BRIEF_INTRO,
+    JSON_INSTRUCTIONS,
 )
 
 
@@ -136,7 +140,7 @@ class JSONProbe(BaseProbe):
         # --- Small-file bypass ---
         if should_bypass(raw):
             stats["is_full_content"] = True
-            return ProbeResult(
+            result = ProbeResult(
                 filename=Path(file_path).name,
                 file_type="json",
                 topic=topic,
@@ -145,12 +149,16 @@ class JSONProbe(BaseProbe):
                 chunks=[Chunk(content=raw, index=0, section="root")],
                 raw_snippet=raw,
             )
+            brief_intro, instructions = self.generate_instructions(result)
+            result.brief_intro = brief_intro
+            result.instructions = instructions
+            return result
 
         # --- Chunking ---
         stats["is_full_content"] = False
         chunks = self._build_chunks(data, raw)
 
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type="json",
             topic=topic,
@@ -159,6 +167,23 @@ class JSONProbe(BaseProbe):
             chunks=chunks,
             raw_snippet=raw[:500],
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate JSON-specific instructions."""
+        # Brief intro
+        brief_intro = JSON_BRIEF_INTRO
+
+        # Full instructions
+        instructions = JSON_INSTRUCTIONS.format(filename=probe_result.filename)
+
+        return brief_intro, instructions
 
     def _describe_value(self, val: Any) -> str:
         if isinstance(val, dict):

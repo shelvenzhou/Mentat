@@ -10,6 +10,10 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import estimate_tokens, extract_preview, merge_small_chunks, SMALL_FILE_TOKENS
+from mentat.probes.instruction_templates import (
+    MARKDOWN_BRIEF_INTRO,
+    MARKDOWN_INSTRUCTIONS,
+)
 
 # If heading density exceeds this AND tokens < _DENSITY_TOKEN_CAP, return full content.
 _HEADING_DENSITY_THRESHOLD = 0.25
@@ -119,7 +123,7 @@ class MarkdownProbe(BaseProbe):
                 TocEntry(level=len(m.group(1)), title=m.group(2).strip())
                 for m in header_matches
             ]
-            return ProbeResult(
+            result = ProbeResult(
                 filename=Path(file_path).name,
                 file_type="markdown",
                 topic=topic,
@@ -128,6 +132,10 @@ class MarkdownProbe(BaseProbe):
                 chunks=[Chunk(content=content, index=0)],
                 raw_snippet=content,
             )
+            brief_intro, instructions = self.generate_instructions(result)
+            result.brief_intro = brief_intro
+            result.instructions = instructions
+            return result
 
         # --- Enhanced skeleton path ---
         stats["is_full_content"] = False
@@ -138,7 +146,7 @@ class MarkdownProbe(BaseProbe):
         # --- Chunks: split by headers with enriched section names ---
         chunks = self._split_by_headers(content, header_matches)
 
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type="markdown",
             topic=topic,
@@ -147,6 +155,23 @@ class MarkdownProbe(BaseProbe):
             chunks=chunks,
             raw_snippet=content[:500],
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate Markdown-specific instructions."""
+        # Brief intro
+        brief_intro = MARKDOWN_BRIEF_INTRO
+
+        # Full instructions
+        instructions = MARKDOWN_INSTRUCTIONS.format(filename=probe_result.filename)
+
+        return brief_intro, instructions
 
     # ------------------------------------------------------------------
     # Private helpers

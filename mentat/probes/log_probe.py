@@ -11,6 +11,10 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import estimate_tokens, should_bypass, safe_read_text
+from mentat.probes.instruction_templates import (
+    LOG_BRIEF_INTRO,
+    LOG_INSTRUCTIONS,
+)
 
 # Common timestamp patterns
 _TIMESTAMP_PATTERNS = [
@@ -105,7 +109,7 @@ class LogProbe(BaseProbe):
         # --- Small-file bypass ---
         if should_bypass(content):
             stats["is_full_content"] = True
-            return ProbeResult(
+            result = ProbeResult(
                 filename=Path(file_path).name,
                 file_type="log",
                 topic=topic,
@@ -114,12 +118,16 @@ class LogProbe(BaseProbe):
                 chunks=[Chunk(content=content, index=0)],
                 raw_snippet=content,
             )
+            brief_intro, instructions = self.generate_instructions(result)
+            result.brief_intro = brief_intro
+            result.instructions = instructions
+            return result
 
         # --- Sample chunks ---
         stats["is_full_content"] = False
         chunks = self._build_sample_chunks(non_empty, level_counts)
 
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type="log",
             topic=topic,
@@ -128,6 +136,23 @@ class LogProbe(BaseProbe):
             chunks=chunks,
             raw_snippet="\n".join(non_empty[:5]),
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate Log-specific instructions."""
+        # Brief intro
+        brief_intro = LOG_BRIEF_INTRO
+
+        # Full instructions
+        instructions = LOG_INSTRUCTIONS.format(filename=probe_result.filename)
+
+        return brief_intro, instructions
 
     def _detect_format(self, sample_lines: List[str]) -> str:
         if not sample_lines:

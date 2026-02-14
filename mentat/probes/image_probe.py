@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from mentat.probes.base import (
     BaseProbe,
     ProbeResult,
@@ -9,6 +9,10 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import format_size
+from mentat.probes.instruction_templates import (
+    IMAGE_BRIEF_INTRO,
+    IMAGE_INSTRUCTIONS,
+)
 
 try:
     from PIL import Image
@@ -77,7 +81,7 @@ class ImageProbe(BaseProbe):
 
         chunks = [Chunk(content=chunk_content, index=0, section="metadata")]
 
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type="image",
             topic=topic,
@@ -86,6 +90,23 @@ class ImageProbe(BaseProbe):
             chunks=chunks,
             raw_snippet=None,
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate Image-specific instructions."""
+        # Brief intro
+        brief_intro = IMAGE_BRIEF_INTRO
+
+        # Full instructions
+        instructions = IMAGE_INSTRUCTIONS.format(filename=probe_result.filename)
+
+        return brief_intro, instructions
 
     def _extract_exif(self, img: "Image.Image") -> Dict[str, str]:
         """Extract human-readable EXIF data from an image."""

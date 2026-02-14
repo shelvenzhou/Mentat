@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from mentat.probes.base import (
     BaseProbe,
     ProbeResult,
@@ -7,6 +7,10 @@ from mentat.probes.base import (
     StructureInfo,
     TocEntry,
     Chunk,
+)
+from mentat.probes.instruction_templates import (
+    CALENDAR_BRIEF_INTRO,
+    CALENDAR_INSTRUCTIONS,
 )
 
 try:
@@ -154,7 +158,7 @@ class CalendarProbe(BaseProbe):
                 )
             )
 
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type="calendar",
             topic=topic,
@@ -163,3 +167,20 @@ class CalendarProbe(BaseProbe):
             chunks=chunks,
             raw_snippet=chunks[0].content[:500] if chunks else None,
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate Calendar-specific instructions."""
+        # Brief intro
+        brief_intro = CALENDAR_BRIEF_INTRO
+
+        # Full instructions
+        instructions = CALENDAR_INSTRUCTIONS.format(filename=probe_result.filename)
+
+        return brief_intro, instructions

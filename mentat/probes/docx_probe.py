@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from mentat.probes.base import (
     BaseProbe,
     ProbeResult,
@@ -10,6 +10,10 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import estimate_tokens, should_bypass, extract_preview, merge_small_chunks
+from mentat.probes.instruction_templates import (
+    DOCX_BRIEF_INTRO,
+    DOCX_INSTRUCTIONS,
+)
 
 try:
     from docx import Document
@@ -100,7 +104,7 @@ class DOCXProbe(BaseProbe):
         # --- Small-file bypass ---
         if should_bypass(full_text):
             stats["is_full_content"] = True
-            return ProbeResult(
+            result = ProbeResult(
                 filename=Path(file_path).name,
                 file_type="docx",
                 topic=topic,
@@ -109,12 +113,16 @@ class DOCXProbe(BaseProbe):
                 chunks=[Chunk(content=full_text, index=0)],
                 raw_snippet=full_text,
             )
+            brief_intro, instructions = self.generate_instructions(result)
+            result.brief_intro = brief_intro
+            result.instructions = instructions
+            return result
 
         # --- Chunks: split by headings ---
         stats["is_full_content"] = False
         chunks = self._build_chunks(sections)
 
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type="docx",
             topic=topic,
@@ -123,6 +131,23 @@ class DOCXProbe(BaseProbe):
             chunks=chunks,
             raw_snippet=full_text[:500],
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate DOCX-specific instructions."""
+        # Brief intro
+        brief_intro = DOCX_BRIEF_INTRO
+
+        # Full instructions
+        instructions = DOCX_INSTRUCTIONS.format(filename=probe_result.filename)
+
+        return brief_intro, instructions
 
     def _extract_headings(
         self, doc: "Document"

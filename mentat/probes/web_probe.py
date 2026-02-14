@@ -2,7 +2,7 @@ import re
 import json
 import trafilatura
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from mentat.probes.base import (
     BaseProbe,
     ProbeResult,
@@ -12,6 +12,10 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import estimate_tokens, should_bypass, extract_preview, merge_small_chunks
+from mentat.probes.instruction_templates import (
+    WEB_BRIEF_INTRO,
+    WEB_INSTRUCTIONS,
+)
 
 # Regex patterns for HTML structure extraction
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
@@ -176,7 +180,7 @@ class WebProbe(BaseProbe):
         # Small-file bypass
         if content_text and should_bypass(content_text):
             stats["is_full_content"] = True
-            return ProbeResult(
+            result = ProbeResult(
                 filename=Path(file_path).name,
                 file_type="web",
                 topic=topic,
@@ -185,12 +189,16 @@ class WebProbe(BaseProbe):
                 chunks=[Chunk(content=content_text, index=0)],
                 raw_snippet=content_text,
             )
+            brief_intro, instructions = self.generate_instructions(result)
+            result.brief_intro = brief_intro
+            result.instructions = instructions
+            return result
 
         # Chunks: split by heading sections
         stats["is_full_content"] = False
         chunks = self._build_section_chunks(content_text, toc_entries, heading_matches, html_content)
 
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type="web",
             topic=topic,
@@ -199,6 +207,23 @@ class WebProbe(BaseProbe):
             chunks=chunks,
             raw_snippet=content_text[:500] if content_text else None,
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate Web/HTML-specific instructions."""
+        # Brief intro
+        brief_intro = WEB_BRIEF_INTRO
+
+        # Full instructions
+        instructions = WEB_INSTRUCTIONS.format(filename=probe_result.filename)
+
+        return brief_intro, instructions
 
     def _annotate_html_section(self, section_html: str) -> Optional[str]:
         """Annotate an HTML section with structural features."""

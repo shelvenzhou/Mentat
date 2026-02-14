@@ -13,6 +13,12 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import format_size
+from mentat.probes.instruction_templates import (
+    ARCHIVE_BRIEF_INTRO,
+    ARCHIVE_INSTRUCTIONS,
+    ARCHIVE_EXTRACTION_ZIP,
+    ARCHIVE_EXTRACTION_TAR,
+)
 
 
 class ArchiveProbe(BaseProbe):
@@ -89,7 +95,7 @@ class ArchiveProbe(BaseProbe):
 
         chunks = [Chunk(content=listing, index=0, section="file_listing")]
 
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type="archive",
             topic=topic,
@@ -98,6 +104,40 @@ class ArchiveProbe(BaseProbe):
             chunks=chunks,
             raw_snippet=listing[:500],
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate archive-specific instructions."""
+        stats = probe_result.stats
+        format_name = stats['archive_format']
+        format_upper = format_name.upper()
+        module = 'zipfile' if format_name == 'zip' else 'tarfile'
+
+        # Brief intro
+        brief_intro = ARCHIVE_BRIEF_INTRO.format(
+            format=format_upper,
+            module=module,
+        )
+
+        # Extraction code (format-specific)
+        extraction = (
+            ARCHIVE_EXTRACTION_ZIP if format_name == 'zip'
+            else ARCHIVE_EXTRACTION_TAR
+        ).format(filename=probe_result.filename)
+
+        # Full instructions
+        instructions = ARCHIVE_INSTRUCTIONS.format(
+            format=format_upper,
+            extraction_code=extraction,
+        )
+
+        return brief_intro, instructions
 
     def _list_zip(
         self, file_path: str

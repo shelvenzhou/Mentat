@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from mentat.probes.base import (
     BaseProbe,
     ProbeResult,
@@ -9,6 +9,10 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import estimate_tokens
+from mentat.probes.instruction_templates import (
+    PPTX_BRIEF_INTRO,
+    PPTX_INSTRUCTIONS,
+)
 
 try:
     from pptx import Presentation
@@ -156,7 +160,7 @@ class PPTXProbe(BaseProbe):
 
         structure = StructureInfo(toc=toc_entries)
 
-        return ProbeResult(
+        result = ProbeResult(
             filename=Path(file_path).name,
             file_type="pptx",
             topic=topic,
@@ -165,3 +169,20 @@ class PPTXProbe(BaseProbe):
             chunks=chunks,
             raw_snippet=chunks[0].content[:500] if chunks else None,
         )
+
+        # Generate format-specific instructions
+        brief_intro, instructions = self.generate_instructions(result)
+        result.brief_intro = brief_intro
+        result.instructions = instructions
+
+        return result
+
+    def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate PPTX-specific instructions."""
+        # Brief intro
+        brief_intro = PPTX_BRIEF_INTRO
+
+        # Full instructions
+        instructions = PPTX_INSTRUCTIONS.format(filename=probe_result.filename)
+
+        return brief_intro, instructions
