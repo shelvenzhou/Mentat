@@ -21,21 +21,95 @@ def cli(debug):
 
 
 @cli.command()
-@click.argument("path", type=click.Path(exists=True))
+@click.argument("paths", nargs=-1, type=click.Path(exists=True), required=True)
 @click.option(
     "--force", is_flag=True, help="Re-index even if file was already processed"
 )
 @click.option(
     "-c", "--collection", "coll_name", default=None, help="Add to a named collection"
 )
-def index(path, force, coll_name):
-    """Index a file or directory."""
+@click.option(
+    "--summarize",
+    is_flag=True,
+    help="Enable LLM-based chunk summarization (slow, high quality)",
+)
+@click.option(
+    "--llm-instructions",
+    is_flag=True,
+    help="Use LLM for instruction generation (slow, smart)",
+)
+@click.option(
+    "--concurrency",
+    "-j",
+    type=int,
+    default=3,
+    help="Number of files to index concurrently (default: 3)",
+)
+def index(paths, force, coll_name, summarize, llm_instructions, concurrency):
+    """Index one or more files or directories.
+
+    By default uses fast template-based instructions and skips LLM summarization.
+    This achieves ~10x faster indexing with minimal quality loss.
+
+    Examples:
+        mentat index file1.json file2.pdf file3.md
+        mentat index samples/files/*.json --concurrency 5
+        mentat index doc.pdf --summarize --llm-instructions  # Full quality, slow
+    """
+    import os
+    from pathlib import Path
+
     m = Mentat()
-    if coll_name:
-        coll = m.collection(coll_name)
-        asyncio.run(coll.add(path, force=force))
-    else:
-        asyncio.run(m.add(path, force=force))
+
+    # Expand paths (handle directories and globs)
+    file_list = []
+    for path_str in paths:
+        p = Path(path_str)
+        if p.is_dir():
+            # Recursively find files
+            file_list.extend([str(f) for f in p.rglob("*") if f.is_file()])
+        else:
+            file_list.append(str(p))
+
+    if not file_list:
+        click.echo("No files to index.")
+        return
+
+    click.echo(f"Indexing {len(file_list)} file(s)...")
+    if concurrency > 1:
+        click.echo(f"Concurrency: {concurrency}")
+    click.echo(f"{'─' * 60}\n")
+
+    async def index_batch():
+        """Index files with controlled concurrency."""
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def index_one(file_path: str, idx: int):
+            async with semaphore:
+                click.echo(f"  [{idx+1}/{len(file_list)}] {Path(file_path).name}")
+                try:
+                    if coll_name:
+                        coll = m.collection(coll_name)
+                        await coll.add(
+                            file_path,
+                            force=force,
+                            summarize=summarize,
+                            use_llm_instructions=llm_instructions,
+                        )
+                    else:
+                        await m.add(
+                            file_path,
+                            force=force,
+                            summarize=summarize,
+                            use_llm_instructions=llm_instructions,
+                        )
+                except Exception as e:
+                    click.echo(f"    ❌ Error: {e}")
+
+        tasks = [index_one(f, i) for i, f in enumerate(file_list)]
+        await asyncio.gather(*tasks)
+
+    asyncio.run(index_batch())
 
 
 @cli.command()

@@ -28,5 +28,6 @@ htmlcov/
 # Mac
 .DS_Store
 
+design-docs/
 samples/
 references/

@@ -19,6 +19,7 @@ class TelemetryStats(BaseModel):
     total_tokens: int = 0
     saved_context_ratio: float = 0.0
     num_chunks: int = 0
+    fast_mode: bool = False  # True if template instructions + no summarization
 
 
 class Telemetry:
@@ -79,14 +80,25 @@ class Telemetry:
             + stats.embedding_time_ms
         )
 
+        mode_indicator = " | ⚡ Fast mode" if stats.fast_mode else ""
+
         lines = [
             f"[Stats] {stats.num_chunks} chunks | "
-            f"{stats.total_tokens} tokens | "
-            f"Saved: {stats.saved_context_ratio * 100:.1f}% context",
+            f"{stats.total_tokens if stats.total_tokens else 0} tokens | "
+            f"Saved: {stats.saved_context_ratio * 100:.1f}% context{mode_indicator}",
             f"  Probe:       {_fmt_time(stats.probe_time_ms)}",
-            f"  Summarize:   {_fmt_time(stats.summarize_time_ms)}",
-            f"  Instruction: {_fmt_time(stats.librarian_time_ms)}",
-            f"  Embedding:   {_fmt_time(stats.embedding_time_ms)}",
-            f"  Total:       {_fmt_time(total)}",
         ]
+
+        # Only show summarize/instruction times if they were actually used
+        if stats.summarize_time_ms > 0:
+            lines.append(f"  Summarize:   {_fmt_time(stats.summarize_time_ms)}")
+        if stats.librarian_time_ms > 0:
+            lines.append(
+                f"  Instruction: {_fmt_time(stats.librarian_time_ms)}"
+                + (" (template)" if stats.fast_mode else " (LLM)")
+            )
+
+        lines.append(f"  Embedding:   {_fmt_time(stats.embedding_time_ms)}")
+        lines.append(f"  Total:       {_fmt_time(total)}")
+
         return "\n".join(lines)

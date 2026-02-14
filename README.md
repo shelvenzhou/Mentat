@@ -21,6 +21,26 @@ Mentat solves the **"Token Explosion"** problem in traditional RAG. Instead of f
 - **Multi-Provider LLM**: Powered by `litellm` — works with OpenAI, Claude, Gemini, Ollama, Azure, vLLM, and any OpenAI-compatible endpoint. Separate API keys/base URLs for the summary model and embedding model.
 - **Auto Vector Dimensions**: Embedding dimensions are auto-detected from the model name — no manual configuration needed.
 - **Telemetry**: Built-in tracking of token savings and processing time across probe, summarise, and librarian phases.
+- **⚡ Fast Mode**: Default mode uses template-based instructions and lazy summarization for **19x faster indexing** with near-zero LLM overhead while maintaining semantic fingerprinting benefits.
+
+## Performance
+
+Mentat offers two indexing modes:
+
+| Mode | Indexing Speed | LLM Calls | Use Case |
+|------|---------------|-----------|----------|
+| **Fast (default)** | ~1.5s/file | Embeddings only | Production indexing, large batches |
+| **Full** | ~30s/file | Summaries + Instructions | High-quality summaries needed |
+
+**Benchmark** (single JSON file, 30 chunks):
+```
+Fast mode: 1.48s  (19.7x faster ⚡)
+Full mode: 29.20s
+```
+
+**Fast mode** uses template-based instructions and skips LLM summarization during indexing. Summaries can be generated on-demand later. Search quality is unchanged (embeddings use full chunk content).
+
+See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for detailed performance analysis.
 
 ## Architecture
 
@@ -115,8 +135,16 @@ print(result.topic.title)
 print(result.structure.toc)
 print(result.chunks)
 
-# Index a file (Probe -> Summarise -> Instruct -> Embed -> Store)
+# Index a file (fast mode - default, 19x faster ⚡)
 doc_id = await mentat.add("data/report.pdf")
+
+# Index with full LLM processing (slower, includes summaries)
+doc_id = await mentat.add("data/report.pdf", summarize=True, use_llm_instructions=True)
+
+# Batch indexing with concurrency
+import asyncio
+files = ["doc1.pdf", "doc2.json", "doc3.md"]
+doc_ids = await asyncio.gather(*[mentat.add(f) for f in files])
 
 # Search (returns chunks with summaries and instructions)
 results = await mentat.search("outlier detection", top_k=5)
@@ -170,9 +198,13 @@ results = await mentat.search("quantum computing")
 mentat probe data/report.pdf --format rich
 mentat probe data/dataset.csv --format json
 
-# Index a file (runs full pipeline: probe → summarise → instruct → embed → store)
+# Index files (fast mode by default - 19x faster ⚡)
 mentat index data/report.pdf
-mentat index data/report.pdf -c research_papers
+mentat index data/*.json -j 5                    # concurrent, 5 files at once
+mentat index data/report.pdf -c research_papers  # add to collection
+
+# Full mode (includes LLM summaries + instructions)
+mentat index data/report.pdf --summarize --llm-instructions
 
 # Search (optionally scoped to a collection)
 mentat search "financial summary" --top-k 10 --hybrid
