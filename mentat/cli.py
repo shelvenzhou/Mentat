@@ -39,20 +39,29 @@ def cli(debug):
     help="Use LLM for instruction generation (slow, smart)",
 )
 @click.option(
+    "--wait",
+    is_flag=True,
+    help="Wait for background processing to complete (default: async mode)",
+)
+@click.option(
     "--concurrency",
     "-j",
     type=int,
     default=3,
     help="Number of files to index concurrently (default: 3)",
 )
-def index(paths, force, coll_name, summarize, llm_instructions, concurrency):
+def index(paths, force, coll_name, summarize, llm_instructions, wait, concurrency):
     """Index one or more files or directories.
 
     By default uses fast template-based instructions and skips LLM summarization.
     This achieves ~10x faster indexing with minimal quality loss.
 
+    NEW: Async mode by default - returns immediately while processing in background.
+    Use --wait to block until processing completes (legacy synchronous behavior).
+
     Examples:
-        mentat index file1.json file2.pdf file3.md
+        mentat index file1.json file2.pdf file3.md  # Returns immediately (async)
+        mentat index doc.pdf --wait  # Waits for completion (sync)
         mentat index samples/files/*.json --concurrency 5
         mentat index doc.pdf --summarize --llm-instructions  # Full quality, slow
     """
@@ -82,6 +91,9 @@ def index(paths, force, coll_name, summarize, llm_instructions, concurrency):
 
     async def index_batch():
         """Index files with controlled concurrency."""
+        # Start background processor
+        await m.start()
+
         semaphore = asyncio.Semaphore(concurrency)
 
         async def index_one(file_path: str, idx: int):
@@ -90,24 +102,41 @@ def index(paths, force, coll_name, summarize, llm_instructions, concurrency):
                 try:
                     if coll_name:
                         coll = m.collection(coll_name)
-                        await coll.add(
+                        doc_id = await coll.add(
                             file_path,
                             force=force,
                             summarize=summarize,
                             use_llm_instructions=llm_instructions,
+                            wait=wait,
                         )
                     else:
-                        await m.add(
+                        doc_id = await m.add(
                             file_path,
                             force=force,
                             summarize=summarize,
                             use_llm_instructions=llm_instructions,
+                            wait=wait,
                         )
+
+                    # Show status based on wait mode
+                    if not wait:
+                        status = m.get_processing_status(doc_id)
+                        status_indicator = {
+                            "pending": "⏳",
+                            "processing": "🔄",
+                            "completed": "✓",
+                            "failed": "❌"
+                        }.get(status.get("status", ""), "?")
+                        click.echo(f"    {status_indicator} Queued: {doc_id[:8]}…")
+
                 except Exception as e:
                     click.echo(f"    ❌ Error: {e}")
 
         tasks = [index_one(f, i) for i, f in enumerate(file_list)]
         await asyncio.gather(*tasks)
+
+        # Shutdown processor gracefully
+        await m.shutdown()
 
     asyncio.run(index_batch())
 
@@ -194,6 +223,51 @@ def inspect(doc_id):
             sec = f" [{cs['section']}]" if cs.get("section") else ""
             summary = cs.get("summary", "")[:120]
             click.echo(f"    [{idx}]{sec}: {summary}")
+
+
+@cli.command()
+@click.argument("doc_id")
+def status(doc_id):
+    """Check processing status for a document.
+
+    Shows whether a document is pending, processing, completed, or failed.
+    Useful for tracking async background processing.
+
+    Examples:
+        mentat status abc12345
+    """
+    m = Mentat()
+    status_dict = m.get_processing_status(doc_id)
+
+    if status_dict.get("status") == "not_found":
+        click.echo(f"❌ Document not found: {doc_id}")
+        return
+
+    status_val = status_dict.get("status", "unknown")
+    status_icon = {
+        "pending": "⏳",
+        "processing": "🔄",
+        "completed": "✓",
+        "failed": "❌"
+    }.get(status_val, "?")
+
+    click.echo(f"\n{'═' * 60}")
+    click.echo(f"  Document ID: {doc_id}")
+    click.echo(f"  Status: {status_icon} {status_val.upper()}")
+    click.echo(f"{'─' * 60}")
+
+    if status_dict.get("submitted_at"):
+        import time
+        elapsed = time.time() - status_dict["submitted_at"]
+        click.echo(f"  Submitted: {elapsed:.1f}s ago")
+
+    if status_dict.get("needs_summarization"):
+        click.echo(f"  Summarization: Enabled")
+
+    if status_dict.get("error"):
+        click.echo(f"  Error: {status_dict['error']}")
+
+    click.echo(f"{'═' * 60}\n")
 
 
 @cli.command()

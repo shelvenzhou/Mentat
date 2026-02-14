@@ -69,7 +69,76 @@ def configure(config: MentatConfig):
     Mentat.get_instance(config)
 
 
+# --- Background Processing APIs ---
+
+
+async def start_processor():
+    """Start the background processing worker.
+
+    Should be called once on application startup to enable async document processing.
+    If not called, documents will be queued but not processed until start_processor() is invoked.
+
+    Example:
+        await mentat.start_processor()
+        doc_id = await mentat.add("large.pdf")  # Returns immediately, processes in background
+    """
+    await Mentat.get_instance().start()
+
+
+async def shutdown():
+    """Shutdown the background processor gracefully.
+
+    Waits for currently processing tasks to complete before stopping.
+    Should be called on application shutdown.
+
+    Example:
+        await mentat.shutdown()
+    """
+    await Mentat.get_instance().shutdown()
+
+
+def get_status(doc_id: str) -> dict:
+    """Get processing status for a document.
+
+    Args:
+        doc_id: Document identifier
+
+    Returns:
+        Status dict with keys:
+            - doc_id: Document ID
+            - status: "pending" | "processing" | "completed" | "failed" | "not_found"
+            - submitted_at: Timestamp when queued (if in queue)
+            - error: Error message (if failed)
+            - needs_summarization: Whether summarization was requested
+
+    Example:
+        status = mentat.get_status(doc_id)
+        print(f"Status: {status['status']}")
+    """
+    return Mentat.get_instance().get_processing_status(doc_id)
+
+
+async def wait_for(doc_id: str, timeout: float = 300) -> bool:
+    """Wait for a document's background processing to complete.
+
+    Args:
+        doc_id: Document identifier
+        timeout: Maximum wait time in seconds (default: 300 = 5 minutes)
+
+    Returns:
+        True if processing completed successfully, False if timeout or failed
+
+    Example:
+        doc_id = await mentat.add("file.pdf", wait=False)
+        completed = await mentat.wait_for(doc_id)
+        if completed:
+            print("Processing complete!")
+    """
+    return await Mentat.get_instance().wait_for_completion(doc_id, timeout=timeout)
+
+
 __all__ = [
+    # Core APIs
     "add",
     "search",
     "inspect",
@@ -78,6 +147,12 @@ __all__ = [
     "collection",
     "collections",
     "configure",
+    # Background processing APIs
+    "start_processor",
+    "shutdown",
+    "get_status",
+    "wait_for",
+    # Classes
     "Mentat",
     "MentatConfig",
     "MentatResult",

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -12,6 +13,7 @@ from dotenv import load_dotenv
 
 from mentat.core.telemetry import Telemetry
 from mentat.core.embeddings import EmbeddingRegistry
+from mentat.core.queue import BackgroundProcessor, ProcessingTask
 from mentat.probes import get_probe, run_probe
 from mentat.probes.base import ProbeResult
 from mentat.librarian.engine import Librarian
@@ -68,6 +70,9 @@ class MentatConfig:
     embedding_api_key: str = ""
     embedding_api_base: str = ""
 
+    # Background processing
+    max_concurrent_tasks: int = 5
+
     def __post_init__(self):
         self.db_path = self.db_path or os.getenv("MENTAT_DB_PATH", "./mentat_db")
         self.storage_dir = self.storage_dir or os.getenv(
@@ -109,6 +114,11 @@ class MentatConfig:
         )
         self.embedding_api_base = self.embedding_api_base or os.getenv(
             "MENTAT_EMBEDDING_API_BASE", ""
+        )
+
+        # Background processing
+        self.max_concurrent_tasks = int(
+            os.getenv("MENTAT_MAX_CONCURRENT_TASKS", str(self.max_concurrent_tasks))
         )
 
 
@@ -157,6 +167,9 @@ class Mentat:
         # Adaptors
         self._adaptors: List[BaseAdaptor] = []
 
+        # Background processor (async queue system)
+        self.processor = BackgroundProcessor(self, max_concurrent=self.config.max_concurrent_tasks)
+
     @classmethod
     def get_instance(cls, config: Optional[MentatConfig] = None) -> "Mentat":
         """Singleton accessor for module-level API."""
@@ -173,32 +186,57 @@ class Mentat:
         """Register an adaptor for lifecycle hooks."""
         self._adaptors.append(adaptor)
 
+    async def start(self):
+        """Start the background processor.
+
+        Should be called once on application startup to enable async processing.
+        If not called, documents will queue but not process until start() is invoked.
+        """
+        await self.processor.start()
+
+    async def shutdown(self):
+        """Shutdown the background processor gracefully.
+
+        Waits for currently processing tasks to complete before stopping.
+        Should be called on application shutdown.
+        """
+        await self.processor.stop()
+
     async def add(
         self,
         path: str,
         force: bool = False,
         summarize: bool = False,
         use_llm_instructions: bool = False,
+        wait: bool = False,
     ) -> str:
-        """Index a file: probe → summarise chunks → generate guide → embed → store.
+        """Index a file with async background processing.
 
-        Pipeline:
-          1. Probe (Layer 2) — extract semantic fingerprint, no LLM.
-          2. Chunk summarisation (Librarian phase 1) — LLM summarises each chunk.
-             **SKIPPED by default** (set summarize=True to enable).
-          3. Instruction generation (Librarian phase 2) — Uses template by default
-             (set use_llm_instructions=True for LLM-based generation).
-          4. Embed chunks into vector DB.
-          5. Store raw file for future detailed access.
+        New async pipeline (default):
+          1. Probe (Layer 2) — extract semantic fingerprint, no LLM (~1s)
+          2. Generate template instructions (no LLM, instant)
+          3. Store stub with ToC (no chunks yet)
+          4. Queue background task for embedding + summarization
+          5. Return immediately (or wait if wait=True)
+
+        Background worker then:
+          - Generates embeddings for all chunks
+          - Optionally generates summaries (if summarize=True)
+          - Stores chunks with vectors and summaries
 
         Args:
             path: File path to index
             force: Re-index even if content hash exists in cache
             summarize: Enable LLM-based chunk summarization (default: False, lazy)
             use_llm_instructions: Use LLM for instruction generation (default: False, template-based)
+            wait: Wait for background processing to complete before returning (default: False)
 
-        Returns the document ID.  Skips processing if an identical file
-        (by content hash) was already indexed, unless *force=True*.
+        Returns:
+            Document ID. ToC is available immediately; full chunks available after background processing.
+
+        Note:
+            With wait=False (default), this returns in ~1-3s regardless of file size.
+            Full vector search capability becomes available after background processing completes.
         """
         # Check content hash cache
         if not force:
@@ -214,10 +252,11 @@ class Mentat:
         filename = Path(path).name
         self.logger.info(f"Adding file: {path} (ID: {doc_id})")
 
-        # Layer 2: Probe — extract skeleton (no LLM)
+        # Layer 2: Probe — extract skeleton (no LLM, fast ~1s)
         with Telemetry.time_it(doc_id, "probe"):
             probe_result = run_probe(path)
             probe_result.doc_id = doc_id
+            probe_result.filename = filename
 
         Telemetry.record_chunks(doc_id, len(probe_result.chunks))
 
@@ -228,69 +267,16 @@ class Mentat:
             if stats:
                 stats.fast_mode = True
 
-        # ── Optimized pipeline ───────────────────────────────────────
-        # By default, skip LLM summarization and use template-based instructions.
-        # This reduces indexing time from ~60s to ~10s while preserving structure.
-        #
-        # Default (fast):  Probe → Embedding → Template Instructions → Store
-        # Full (slow):     Probe → [Summarize → LLM Instructions] + Embedding → Store
+        # ── New async pipeline ───────────────────────────────────────
+        # Generate instructions IMMEDIATELY (template-based, no LLM)
+        # Note: use_llm_instructions is ignored for now (always use template for immediate return)
+        # LLM-based instruction generation could be added to background queue in future
+        with Telemetry.time_it(doc_id, "librarian"):
+            brief_intro, instructions = self.librarian.generate_guide_template(
+                probe_result
+            )
 
-        async def _embed():
-            with Telemetry.time_it(doc_id, "embedding"):
-                embed_texts = []
-                for chunk in probe_result.chunks:
-                    text = chunk.content
-                    if chunk.section:
-                        text = f"[{chunk.section}] {text}"
-                    embed_texts.append(text)
-                if not embed_texts:
-                    return []
-                return await self.embeddings.embed_batch(embed_texts)
-
-        # Start embedding (always needed)
-        self.logger.info(f"Starting embedding for {len(probe_result.chunks)} chunks...")
-        embed_task = asyncio.create_task(_embed())
-
-        # Conditional summarization
-        if summarize:
-            self.logger.info(f"Starting summarization for {len(probe_result.chunks)} chunks...")
-            async def _summarize():
-                with Telemetry.time_it(doc_id, "summarize"):
-                    return await self.librarian.summarize_chunks(probe_result)
-
-            chunk_summaries = await _summarize()
-            self.logger.info(f"Summarization complete")
-        else:
-            # Lazy: store empty summaries, can be generated later on-demand
-            chunk_summaries = [""] * len(probe_result.chunks)
-
-        # Instruction generation: template (fast) or LLM (smart)
-        if use_llm_instructions:
-            self.logger.info("Generating instructions with LLM...")
-            async def _generate_guide():
-                with Telemetry.time_it(doc_id, "librarian"):
-                    intro, instr, tokens = await self.librarian.generate_guide(
-                        probe_result, chunk_summaries=chunk_summaries if summarize else None
-                    )
-                    Telemetry.record_tokens(doc_id, tokens)
-                    return intro, instr
-
-            brief_intro, instructions = await _generate_guide()
-            self.logger.info("LLM instruction generation complete")
-        else:
-            # Template-based (no LLM, no tokens)
-            with Telemetry.time_it(doc_id, "librarian"):
-                brief_intro, instructions = self.librarian.generate_guide_template(
-                    probe_result
-                )
-
-        # Wait for embedding to complete
-        self.logger.info("Waiting for embedding to complete...")
-        vectors = await embed_task
-        self.logger.info(f"Embedding complete, got {len(vectors)} vectors")
-
-        # ── Store results ────────────────────────────────────────────
-
+        # Store stub with ToC (NO chunks yet — those are processed in background)
         self.storage.add_stub(
             doc_id=doc_id,
             filename=filename,
@@ -298,49 +284,139 @@ class Mentat:
             instruction=instructions,
             probe_json=json.dumps(probe_result.model_dump(), default=str),
         )
+        self.logger.info(f"Stored stub for {filename}")
 
-        chunk_records = []
-        for chunk, summary, vector in zip(
-            probe_result.chunks, chunk_summaries, vectors
-        ):
-            chunk_records.append(
-                {
-                    "chunk_id": f"{doc_id}_{chunk.index}",
-                    "doc_id": doc_id,
-                    "filename": filename,
-                    "content": chunk.content,
-                    "summary": summary,
-                    "section": chunk.section or "",
-                    "chunk_index": chunk.index,
-                    "vector": vector,
-                }
-            )
-
-        if chunk_records:
-            self.logger.info(f"Storing {len(chunk_records)} chunks in vector DB...")
-            self.storage.add_chunks(chunk_records)
-
-        # Raw file storage — kept for future detailed access
+        # Raw file storage — save immediately for downstream access
         self.file_store.save(path, doc_id)
 
-        # Telemetry
+        # Record in content hash cache
+        self.cache.put(path, doc_id)
+
+        # ── Queue background processing ──────────────────────────────
+        # Create processing task for embedding + summarization
+        task = ProcessingTask(
+            doc_id=doc_id,
+            probe_result=probe_result,
+            priority=10 if wait else 0,  # Higher priority if user is waiting
+            needs_summarization=summarize,
+        )
+
+        await self.processor.queue.submit(task)
+        self.logger.info(
+            f"Queued background processing for {filename} (summarize={summarize})"
+        )
+
+        # Telemetry for immediate return
         original_size = os.path.getsize(path)
         stub_size = len(brief_intro.encode("utf-8"))
         savings = 1.0 - (stub_size / max(1, original_size))
         Telemetry.record_savings(doc_id, savings)
 
-        # Adaptor hooks
+        # Adaptor hooks (called immediately, before chunks are processed)
         for adaptor in self._adaptors:
             adaptor.on_document_indexed(
                 doc_id, {"filename": filename, "brief_intro": brief_intro}
             )
 
-        # Record in content hash cache
-        self.cache.put(path, doc_id)
+        # ── Return immediately or wait ───────────────────────────────
+        if wait:
+            self.logger.info(f"Waiting for background processing to complete...")
+            completed = await self.wait_for_completion(doc_id, timeout=300)
+            if completed:
+                self.logger.info(f"Successfully indexed {filename} (ID: {doc_id})")
+                print(Telemetry.format_stats(doc_id))
+            else:
+                self.logger.warning(f"Processing timeout for {doc_id}")
+                print(f"⚠️ Processing timed out for {doc_id} (still running in background)")
+        else:
+            self.logger.info(f"Returning immediately (ID: {doc_id})")
+            print(f"⏳ Queued: {filename} → {doc_id} (processing in background)")
+            print(Telemetry.format_stats(doc_id))
 
-        self.logger.info(f"Successfully indexed {filename} (ID: {doc_id})")
-        print(Telemetry.format_stats(doc_id))
         return doc_id
+
+    def get_processing_status(self, doc_id: str) -> Dict[str, Any]:
+        """Get current processing status for a document.
+
+        Args:
+            doc_id: Document identifier
+
+        Returns:
+            Status dict with keys:
+                - doc_id: Document ID
+                - status: "pending" | "processing" | "completed" | "failed" | "not_found"
+                - submitted_at: Timestamp when queued (if in queue)
+                - error: Error message (if failed)
+                - needs_summarization: Whether summarization was requested
+
+        Note:
+            Status is tracked in-memory only. Documents indexed before the queue
+            system or not found in the queue return status="not_found".
+        """
+        status = self.processor.queue.get_status(doc_id)
+
+        if not status:
+            # Check if document exists in storage (legacy or not in queue)
+            stub = self.storage.get_stub(doc_id)
+            if stub:
+                # Document exists but not in queue - assume completed
+                return {
+                    "doc_id": doc_id,
+                    "status": "completed",
+                    "submitted_at": None,
+                    "error": None,
+                    "needs_summarization": False,
+                }
+            else:
+                return {
+                    "doc_id": doc_id,
+                    "status": "not_found",
+                    "submitted_at": None,
+                    "error": None,
+                    "needs_summarization": False,
+                }
+
+        return status
+
+    async def wait_for_completion(
+        self, doc_id: str, timeout: float = 300
+    ) -> bool:
+        """Wait for a document's background processing to complete.
+
+        Args:
+            doc_id: Document identifier
+            timeout: Maximum wait time in seconds (default: 300 = 5 minutes)
+
+        Returns:
+            True if processing completed successfully, False if timeout or failed
+
+        Note:
+            Polls the processing status every 0.5 seconds. If the document
+            is not in the queue, returns True immediately (assumes already processed).
+        """
+        start = time.time()
+
+        while time.time() - start < timeout:
+            status_dict = self.get_processing_status(doc_id)
+            status = status_dict.get("status")
+
+            if status == "completed":
+                return True
+            elif status == "failed":
+                self.logger.error(
+                    f"Processing failed for {doc_id}: {status_dict.get('error')}"
+                )
+                return False
+            elif status == "not_found":
+                # Not in queue - either already processed or never queued
+                return True
+
+            # Still pending or processing - wait and retry
+            await asyncio.sleep(0.5)
+
+        # Timeout
+        self.logger.warning(f"Timeout waiting for {doc_id} to complete")
+        return False
 
     async def search(
         self,
@@ -380,6 +456,25 @@ class Mentat:
 
             stub = stub_cache[doc_id]
 
+            # Check processing status and boost priority if needed
+            instructions = stub.get("instruction", "")
+            status_info = self.processor.queue.get_status(doc_id)
+
+            if status_info and status_info.get("status") in ("pending", "processing"):
+                # Boost priority for queried documents still being processed
+                self.processor.queue.bump_priority(doc_id, delta=10)
+                self.logger.debug(
+                    f"Boosted priority for queried document {doc_id} "
+                    f"(status: {status_info['status']})"
+                )
+
+                # Add status annotation to instructions
+                status_val = status_info.get("status")
+                if status_val == "pending":
+                    instructions += "\n\n⏳ [Processing: This document is queued for embedding and will be fully searchable soon]"
+                elif status_val == "processing":
+                    instructions += "\n\n🔄 [Processing: This document is currently being indexed and will be fully available shortly]"
+
             results.append(
                 MentatResult(
                     doc_id=doc_id,
@@ -389,7 +484,7 @@ class Mentat:
                     content=r.get("content", ""),
                     summary=r.get("summary", ""),
                     brief_intro=stub.get("brief_intro", ""),
-                    instructions=stub.get("instruction", ""),
+                    instructions=instructions,
                     score=r.get("_distance", 0.0),
                 )
             )

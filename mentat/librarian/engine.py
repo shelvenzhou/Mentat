@@ -109,17 +109,34 @@ class Librarian:
 
         # Small-file bypass: content IS the summary
         if probe_result.stats.get("is_full_content"):
+            logger.debug(f"Skipping summarization for {probe_result.filename} (full content)")
             return [c.content for c in chunks]
 
-        # Batch chunks and call LLM
+        # Batch chunks by count (simple and effective)
+        # Note: API processing time variance is dominated by server-side rate limiting
+        # and queue position, not batch content size, so simple batching works well.
         summaries: List[Optional[str]] = [None] * len(chunks)
         batches = [
             chunks[i : i + self.summary_batch_size]
             for i in range(0, len(chunks), self.summary_batch_size)
         ]
 
+        logger.info(
+            f"Summarizing {len(chunks)} chunks in {len(batches)} batches "
+            f"({self.summary_batch_size} chunks/batch target) for {probe_result.filename}"
+        )
+
+        import time as time_module
+        batch_start = time_module.perf_counter()
         tasks = [self._summarize_batch(batch, probe_result) for batch in batches]
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+        batch_duration = time_module.perf_counter() - batch_start
+
+        avg_per_batch = batch_duration / len(batches) if batches else 0
+        logger.info(
+            f"Completed summarization for {probe_result.filename} "
+            f"({batch_duration:.1f}s total, {avg_per_batch:.1f}s avg/batch)"
+        )
 
         offset = 0
         for batch, result in zip(batches, batch_results):
@@ -144,6 +161,15 @@ class Librarian:
         self, chunks: List[Chunk], probe_result: ProbeResult
     ) -> List[str]:
         """Summarise a batch of chunks in a single LLM call."""
+        import time as time_module
+        batch_id = chunks[0].index if chunks else 0
+        batch_length = sum(len(c.content) for c in chunks)
+
+        logger.debug(
+            f"Batch {batch_id} starting ({len(chunks)} chunks, {batch_length} chars)..."
+        )
+        batch_start = time_module.perf_counter()
+
         entries = []
         for c in chunks:
             entry: Dict[str, Any] = {"index": c.index, "content": c.content}
@@ -167,6 +193,9 @@ class Librarian:
             response_format={"type": "json_object"},
             **self._llm_kwargs("summary"),
         )
+
+        batch_duration = time_module.perf_counter() - batch_start
+        logger.debug(f"Batch {batch_id} completed in {batch_duration:.1f}s")
 
         content = response.choices[0].message.content
         data = json.loads(content)
@@ -230,6 +259,92 @@ class Librarian:
         token_usage = response.usage.total_tokens
 
         return data.get("brief_intro", ""), data.get("instructions", ""), token_usage
+
+    # ------------------------------------------------------------------
+    # Template-based instruction generation (no LLM)
+    # ------------------------------------------------------------------
+
+    def generate_guide_template(self, probe_result: ProbeResult) -> Tuple[str, str]:
+        """Generate instructions via template (no LLM call).
+
+        Returns ``(brief_intro, instructions)`` based purely on probe metadata.
+        This is ~10x faster than LLM-based generation.
+        """
+        stats = probe_result.stats
+        structure = probe_result.structure
+        topic = probe_result.topic
+
+        # Build brief intro
+        chunks_count = len(probe_result.chunks)
+        total_tokens = stats.get("total_tokens", stats.get("approx_tokens", 0))
+        file_type = probe_result.file_type.upper()
+
+        brief_intro = f"This {file_type} file"
+        if topic.title:
+            brief_intro += f" titled '{topic.title}'"
+        brief_intro += f" contains {chunks_count} section{'s' if chunks_count != 1 else ''}"
+        if total_tokens:
+            brief_intro += f" totaling ~{total_tokens:,} tokens"
+        brief_intro += "."
+
+        # Build instructions
+        parts = ["Available information:"]
+
+        # Structure summary
+        if structure.toc:
+            toc_count = len(structure.toc)
+            parts.append(f"- Structure with {toc_count} sections")
+            # List top-level sections
+            top_sections = [e.title for e in structure.toc if e.level == 1][:5]
+            if top_sections:
+                parts.append(f"  ({', '.join(top_sections)}{'...' if toc_count > 5 else ''})")
+
+        if structure.columns:
+            parts.append(f"- Columns: {', '.join(structure.columns[:10])}")
+
+        if structure.schema_tree:
+            parts.append(f"- Schema information for data structure")
+
+        # Truncation/sampling notes
+        truncation_notes = []
+        if stats.get("is_truncated"):
+            truncation_notes.append("some sections are truncated")
+
+        original_size = stats.get("original_size_tokens", 0)
+        if original_size > total_tokens:
+            pct_saved = 100 * (1 - total_tokens / max(1, original_size))
+            truncation_notes.append(
+                f"{pct_saved:.0f}% of content is summarized/sampled"
+            )
+
+        # File type specific notes
+        if probe_result.file_type == "csv" and stats.get("total_rows"):
+            sampled = stats.get("sample_rows", 0)
+            total = stats.get("total_rows", 0)
+            if sampled < total:
+                truncation_notes.append(
+                    f"only {sampled} of {total:,} rows sampled"
+                )
+
+        if probe_result.file_type == "code":
+            truncation_notes.append("function bodies may be omitted (signatures shown)")
+
+        if truncation_notes:
+            parts.append("\nLimitations:")
+            for note in truncation_notes:
+                parts.append(f"- {note}")
+
+        # Access suggestions
+        parts.append(
+            "\nFor complete details, access the original file using file read operations."
+        )
+
+        if stats.get("is_full_content"):
+            parts[-1] = "Complete content is available in the chunks."
+
+        instructions = "\n".join(parts)
+
+        return brief_intro, instructions
 
     # ------------------------------------------------------------------
     # Prompt builders

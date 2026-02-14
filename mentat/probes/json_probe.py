@@ -189,45 +189,50 @@ class JSONProbe(BaseProbe):
         return None
 
     def _build_chunks(self, data: Any, raw: str) -> List[Chunk]:
+        """Build semantic chunks - one chunk per JSON key/semantic unit.
+
+        Pure semantic splitting: each top-level key becomes a chunk with its
+        full serialized value. No artificial windowing or size thresholds.
+        The section field maps directly to ToC entries.
+        """
         chunks: List[Chunk] = []
 
         if isinstance(data, dict):
-            # One chunk per top-level key
+            # One chunk per top-level key - pure semantic splitting
             for key, val in data.items():
                 serialized = json_module.dumps(
                     {key: val}, indent=2, ensure_ascii=False, default=str
                 )
-                if len(serialized) > 2000:
-                    serialized = serialized[:2000] + "\n... (truncated)"
                 chunks.append(
                     Chunk(
                         content=serialized,
                         index=len(chunks),
-                        section=key,
-                        metadata={"truncated": len(serialized) > 2000},
+                        section=key,  # Maps directly to ToC entry
                     )
                 )
+
         elif isinstance(data, list):
-            # First item as sample
+            # First item as sample (semantic unit for array structure)
             if data:
                 sample = json_module.dumps(
                     data[0], indent=2, ensure_ascii=False, default=str
                 )
-                if len(sample) > 2000:
-                    sample = sample[:2000] + "\n... (truncated)"
+                section = f"item[0] of {len(data)}"
                 chunks.append(
                     Chunk(
                         content=sample,
                         index=0,
-                        section=f"item[0] of {len(data)}",
+                        section=section,
                         metadata={"total_items": len(data)},
                     )
                 )
         else:
-            chunks.append(
-                Chunk(content=raw[:2000], index=0, section="root")
-            )
+            # Primitive root value (single semantic unit)
+            chunks.append(Chunk(content=raw, index=0, section="root"))
 
         if not chunks:
             return [Chunk(content=raw[:2000], index=0, section="root")]
+
+        # Apply merge_small_chunks to handle any tiny chunks
+        # This is the proper place for chunk size optimization
         return merge_small_chunks(chunks)

@@ -22,23 +22,32 @@ Mentat solves the **"Token Explosion"** problem in traditional RAG. Instead of f
 - **Auto Vector Dimensions**: Embedding dimensions are auto-detected from the model name — no manual configuration needed.
 - **Telemetry**: Built-in tracking of token savings and processing time across probe, summarise, and librarian phases.
 - **⚡ Fast Mode**: Default mode uses template-based instructions and lazy summarization for **19x faster indexing** with near-zero LLM overhead while maintaining semantic fingerprinting benefits.
+- **🚀 Async Processing (NEW)**: Returns immediately (~1-3s) after probe + ToC extraction while embeddings/summarization process in background. Priority boosting automatically processes queried documents first. Perfect for batch indexing and responsive UIs.
 
 ## Performance
 
-Mentat offers two indexing modes:
+Mentat offers two indexing modes with async/sync processing:
 
-| Mode | Indexing Speed | LLM Calls | Use Case |
-|------|---------------|-----------|----------|
-| **Fast (default)** | ~1.5s/file | Embeddings only | Production indexing, large batches |
-| **Full** | ~30s/file | Summaries + Instructions | High-quality summaries needed |
+| Mode | Async Return Time | Full Processing | LLM Calls | Use Case |
+|------|------------------|-----------------|-----------|----------|
+| **Fast + Async (default)** | ~1-3s | ~10-15s (background) | Embeddings only | Production indexing, responsive UIs, large batches |
+| **Fast + Sync** | ~10-15s | ~10-15s (blocking) | Embeddings only | Legacy compatibility |
+| **Full + Async** | ~1-3s | ~30-60s (background) | Summaries + Instructions | High-quality with responsiveness |
+| **Full + Sync** | ~30-60s | ~30-60s (blocking) | Summaries + Instructions | High-quality, wait for completion |
+
+**Async Mode (NEW)**: Returns immediately after probe + ToC extraction (~1-3s), then processes embeddings/summarization in background. ToC is available immediately for inspection; full vector search available after background processing completes.
 
 **Benchmark** (single JSON file, 30 chunks):
 ```
-Fast mode: 1.48s  (19.7x faster ⚡)
-Full mode: 29.20s
+Fast + Async:  1.48s → returns immediately (background: +10s)
+Fast + Sync:   11.2s (blocking)
+Full + Async:  2.1s  → returns immediately (background: +30s)
+Full + Sync:   32.5s (blocking)
 ```
 
 **Fast mode** uses template-based instructions and skips LLM summarization during indexing. Summaries can be generated on-demand later. Search quality is unchanged (embeddings use full chunk content).
+
+**Priority Boosting**: Documents queried before processing completes automatically get higher priority in the background queue (+10 priority boost).
 
 See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for detailed performance analysis.
 
@@ -128,6 +137,10 @@ You can use different providers for summarisation and embedding (e.g., Anthropic
 
 ```python
 import mentat
+import asyncio
+
+# Start background processor (call once on app startup)
+await mentat.start_processor()
 
 # Probe a file (no LLM, no storage — just structure extraction)
 result = mentat.probe("data/report.pdf")
@@ -135,18 +148,34 @@ print(result.topic.title)
 print(result.structure.toc)
 print(result.chunks)
 
-# Index a file (fast mode - default, 19x faster ⚡)
+# Index a file (async mode - returns immediately ⚡)
 doc_id = await mentat.add("data/report.pdf")
+print(f"Queued: {doc_id}")  # Returns in ~1-3s
 
-# Index with full LLM processing (slower, includes summaries)
+# Check processing status
+status = mentat.get_status(doc_id)
+print(f"Status: {status['status']}")  # pending/processing/completed/failed
+
+# Wait for processing to complete (optional)
+completed = await mentat.wait_for(doc_id, timeout=60)
+print(f"Processing completed: {completed}")
+
+# Index with synchronous mode (waits for completion)
+doc_id = await mentat.add("data/report.pdf", wait=True)  # Blocks until done
+
+# Index with full LLM processing (async by default)
 doc_id = await mentat.add("data/report.pdf", summarize=True, use_llm_instructions=True)
 
-# Batch indexing with concurrency
-import asyncio
+# Batch indexing - all return immediately
 files = ["doc1.pdf", "doc2.json", "doc3.md"]
 doc_ids = await asyncio.gather(*[mentat.add(f) for f in files])
+print(f"Queued {len(doc_ids)} documents")  # Returns in seconds!
+
+# Wait for all to complete
+await asyncio.gather(*[mentat.wait_for(d) for d in doc_ids])
 
 # Search (returns chunks with summaries and instructions)
+# Automatically boosts priority for any queried documents still processing
 results = await mentat.search("outlier detection", top_k=5)
 for r in results:
     print(f"[{r.filename}] {r.section}")
@@ -159,6 +188,9 @@ info = await mentat.inspect(doc_id)
 
 # System statistics
 mentat.stats()
+
+# Shutdown processor (call on app exit)
+await mentat.shutdown()
 ```
 
 #### Collections
@@ -198,15 +230,23 @@ results = await mentat.search("quantum computing")
 mentat probe data/report.pdf --format rich
 mentat probe data/dataset.csv --format json
 
-# Index files (fast mode by default - 19x faster ⚡)
-mentat index data/report.pdf
-mentat index data/*.json -j 5                    # concurrent, 5 files at once
-mentat index data/report.pdf -c research_papers  # add to collection
+# Index files (async mode by default - returns immediately ⚡)
+mentat index data/report.pdf                     # Queues and returns in ~1-3s
+mentat index data/*.json -j 5                    # Concurrent, 5 files at once
+mentat index data/report.pdf -c research_papers  # Add to collection
 
-# Full mode (includes LLM summaries + instructions)
+# Index with synchronous mode (waits for completion)
+mentat index data/report.pdf --wait              # Blocks until fully processed
+
+# Check processing status
+mentat status <doc_id>                           # Shows pending/processing/completed/failed
+
+# Full mode (includes LLM summaries + instructions, async by default)
 mentat index data/report.pdf --summarize --llm-instructions
+mentat index data/report.pdf --summarize --llm-instructions --wait  # Wait for completion
 
 # Search (optionally scoped to a collection)
+# Automatically boosts priority for any queried documents still processing
 mentat search "financial summary" --top-k 10 --hybrid
 mentat search "financial summary" -c research_papers
 

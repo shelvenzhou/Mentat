@@ -28,7 +28,9 @@ No test framework or linting tools are configured yet.
 
 ```bash
 mentat probe <file_paths> [--format rich|json]        # Run probes (no LLM, no storage)
-mentat index <path> [--force] [-c <collection>]       # Index file/directory
+mentat index <path> [--force] [-c <collection>]       # Index file/directory (async by default)
+mentat index <path> --wait                             # Index and wait for completion (sync mode)
+mentat status <doc_id>                                 # Check processing status
 mentat search <query> [--top-k 5] [-c <collection>]   # Search (optionally scoped)
 mentat inspect <doc_id>                                # Show probe results + instructions
 mentat stats                                           # System statistics
@@ -82,11 +84,24 @@ Three-layer design where each layer feeds into the next:
 - `Mentat` class — singleton via `get_instance()`, reset with `reset()`
 - `Collection` class — thin wrapper for scoped add/search over a named doc group
 - `MentatConfig` dataclass — loads from `.env` via `python-dotenv`, with `MENTAT_` prefixed env vars
-- Pipeline: `add()` runs probe → summarise chunks → generate guide → embed → store
+- **NEW: Async Processing Pipeline** — `add()` now returns immediately (~1-3s) after probe + stub storage, then processes embeddings/summarization in background:
+  - **Sync flow (legacy)**: `add(wait=True)` → probe → summarise chunks → generate guide → embed → store
+  - **Async flow (default)**: `add(wait=False)` → probe → store ToC → queue task → return immediately
+  - Background worker processes embeddings + summarization asynchronously
+
+**Background Processing Queue:** `mentat/core/queue.py`
+- `ProcessingQueue` — in-memory priority queue for pending documents
+- `BackgroundProcessor` — worker that processes embeddings + summarization in background
+- `ProcessingTask` — tracks doc_id, priority, status (pending/processing/completed/failed)
+- Priority boosting: Documents queried via `search()` before processing completes get higher priority
+- Concurrency control: `max_concurrent_tasks` (default: 3) limits parallel processing
+- Status tracking: `get_processing_status(doc_id)` returns real-time status
+- Lifecycle: `start()` and `shutdown()` manage background worker
 
 **Public API:** `mentat/__init__.py`
 - Module-level functions: `add()`, `search()`, `probe()`, `inspect()`, `stats()`, `collection()`, `collections()`, `configure()`
-- `add()`, `search()`, `inspect()` are async; `probe()`, `stats()`, `collection()`, `collections()` are sync
+- **NEW:** `start_processor()`, `shutdown()`, `get_status(doc_id)`, `wait_for(doc_id, timeout)`
+- `add()`, `search()`, `inspect()` are async; `probe()`, `stats()`, `collection()`, `collections()`, `get_status()` are sync
 
 ## Key Patterns
 
@@ -99,4 +114,12 @@ Three-layer design where each layer feeds into the next:
 - **Adaptor hooks** (`mentat/adaptors/`) — `BaseAdaptor` interface with `on_document_indexed`, `on_search_results`, `transform_query`
 - **Collections** — named doc groups for scoped search; shared storage with doc_id references (no vector duplication); LanceDB `WHERE doc_id IN (...)` pre-filtering with BTREE scalar index
 - **Telemetry** (`mentat/core/telemetry.py`) — context-manager-based timing, tracks probe/summarize/librarian time, tokens, and context savings
-- **Environment config** — `.env` file loaded at import via `python-dotenv`; `MentatConfig` resolves: explicit arg > env var (`MENTAT_*`) > default. Separate `api_key`/`api_base` for summary model (`MENTAT_SUMMARY_*`), instruction model (`MENTAT_INSTRUCTION_*`), and embedding model (`MENTAT_EMBEDDING_*`); instruction model falls back to summary model when not set. Global provider keys (`OPENAI_API_KEY`, etc.) are read natively by `litellm` as fallback. Vector dimension is auto-detected from the first embedding call (lazy chunks table creation).
+- **Async Processing Queue** (NEW) — Background processing system for non-blocking indexing:
+  - **In-memory queue**: Tasks tracked in `ProcessingQueue._tasks` dict (transient, lost on restart)
+  - **Priority boosting**: Documents queried before processing completes get higher priority (+10)
+  - **Concurrency control**: `max_concurrent_tasks` (configurable via `MENTAT_MAX_CONCURRENT_TASKS`) limits parallel processing
+  - **Status tracking**: Real-time status via `get_processing_status(doc_id)` returns pending/processing/completed/failed
+  - **Two-stage storage**: Stubs stored immediately (with ToC), chunks stored after background processing
+  - **Lifecycle management**: Call `await mentat.start_processor()` once on app startup, `await mentat.shutdown()` on exit
+  - **Search integration**: `search()` automatically boosts priority for pending docs and annotates results with processing status
+- **Environment config** — `.env` file loaded at import via `python-dotenv`; `MentatConfig` resolves: explicit arg > env var (`MENTAT_*`) > default. Separate `api_key`/`api_base` for summary model (`MENTAT_SUMMARY_*`), instruction model (`MENTAT_INSTRUCTION_*`), and embedding model (`MENTAT_EMBEDDING_*`); instruction model falls back to summary model when not set. Global provider keys (`OPENAI_API_KEY`, etc.) are read natively by `litellm` as fallback. Vector dimension is auto-detected from the first embedding call (lazy chunks table creation). NEW: `MENTAT_MAX_CONCURRENT_TASKS` (default: 3) controls background processing concurrency.

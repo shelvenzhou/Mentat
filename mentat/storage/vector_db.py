@@ -72,6 +72,10 @@ class LanceDBStorage:
                 pa.field("section", pa.string()),
                 pa.field("chunk_index", pa.int32()),
                 pa.field("vector", pa.list_(pa.float32(), vector_dim)),
+                # Fields for split chunks (optional, null if chunk wasn't split)
+                pa.field("is_split", pa.bool_(), nullable=True),
+                pa.field("piece_index", pa.int32(), nullable=True),
+                pa.field("total_pieces", pa.int32(), nullable=True),
             ]
         )
         self._chunks_table = self.db.create_table("chunks", schema=schema)
@@ -109,6 +113,31 @@ class LanceDBStorage:
         if res:
             return res[0]
         return None
+
+    def has_chunks(self, doc_id: str) -> bool:
+        """Check if a document has chunks stored.
+
+        Useful for determining if background processing has completed.
+
+        Args:
+            doc_id: Document identifier
+
+        Returns:
+            True if the document has at least one chunk with vectors
+        """
+        if self.chunks_table is None:
+            return False
+
+        try:
+            res = (
+                self.chunks_table.search()
+                .where(f"doc_id = '{doc_id}'")
+                .limit(1)
+                .to_list()
+            )
+            return len(res) > 0
+        except Exception:
+            return False
 
     # --- Chunk-level operations ---
 

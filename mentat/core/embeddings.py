@@ -3,6 +3,16 @@ from typing import List, Optional
 
 import litellm
 
+# Token estimation for batching
+def _estimate_tokens(text: str) -> int:
+    """Estimate token count from text.
+
+    Uses character-based estimation which works better for JSON/code.
+    Rule of thumb: 1 token ≈ 3-4 characters for most content.
+    Using 3 chars/token for conservative estimate.
+    """
+    return int(len(text) / 3)
+
 
 # ── Embedding providers ─────────────────────────────────────────────────────
 
@@ -38,19 +48,95 @@ class LiteLLMEmbedding(BaseEmbedding):
         response = await litellm.aembedding(**kwargs)
         return response.data[0]["embedding"]
 
-    async def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        """Embed all texts in a single API call."""
+    async def embed_batch(self, texts: List[str], max_tokens_per_batch: int = 6000) -> List[List[float]]:
+        """Embed texts in batches that respect the model's context window.
+
+        Args:
+            texts: List of texts to embed
+            max_tokens_per_batch: Maximum tokens per API call (default 6000 to leave headroom)
+
+        Returns:
+            List of embeddings in same order as input texts
+        """
         if not texts:
             return []
-        kwargs = {"model": self.model, "input": texts}
-        if self.api_key:
-            kwargs["api_key"] = self.api_key
-        if self.api_base:
-            kwargs["api_base"] = self.api_base
-        response = await litellm.aembedding(**kwargs)
-        # Sort by index to preserve input order
-        sorted_data = sorted(response.data, key=lambda x: x["index"])
-        return [item["embedding"] for item in sorted_data]
+
+        # Single text or small batch - send as-is
+        if len(texts) == 1:
+            kwargs = {"model": self.model, "input": texts}
+            if self.api_key:
+                kwargs["api_key"] = self.api_key
+            if self.api_base:
+                kwargs["api_base"] = self.api_base
+            response = await litellm.aembedding(**kwargs)
+            return [response.data[0]["embedding"]]
+
+        # Batch texts to respect context window
+        batches = []
+        current_batch = []
+        current_tokens = 0
+
+        for i, text in enumerate(texts):
+            text_tokens = _estimate_tokens(text)
+
+            # If a single text is too large, warn and truncate it
+            if text_tokens > max_tokens_per_batch:
+                import logging
+                logger = logging.getLogger(__name__)
+                # Truncate to fit (rough approximation: chars = tokens * 4)
+                max_chars = int(max_tokens_per_batch * 4)
+                original_len = len(text)
+                text = text[:max_chars]
+                text_tokens = max_tokens_per_batch - 100  # Leave some headroom
+                logger.warning(
+                    f"Text {i} too large ({original_len} chars, est. {_estimate_tokens(texts[i])} tokens), "
+                    f"truncated to {max_chars} chars"
+                )
+
+            # If adding this text would exceed limit, start new batch
+            if current_batch and current_tokens + text_tokens > max_tokens_per_batch:
+                batches.append(current_batch)
+                current_batch = [text]
+                current_tokens = text_tokens
+            else:
+                current_batch.append(text)
+                current_tokens += text_tokens
+
+        # Add final batch
+        if current_batch:
+            batches.append(current_batch)
+
+        # Process batches concurrently
+        import asyncio
+        import logging
+        logger = logging.getLogger(__name__)
+
+        async def _embed_one_batch(batch_texts: List[str], batch_idx: int) -> List[List[float]]:
+            batch_tokens = sum(_estimate_tokens(t) for t in batch_texts)
+            logger.debug(
+                f"Embedding batch {batch_idx + 1}/{len(batches)}: "
+                f"{len(batch_texts)} texts, est. {batch_tokens} tokens"
+            )
+            kwargs = {"model": self.model, "input": batch_texts}
+            if self.api_key:
+                kwargs["api_key"] = self.api_key
+            if self.api_base:
+                kwargs["api_base"] = self.api_base
+            response = await litellm.aembedding(**kwargs)
+            # Sort by index to preserve order within batch
+            sorted_data = sorted(response.data, key=lambda x: x["index"])
+            return [item["embedding"] for item in sorted_data]
+
+        batch_results = await asyncio.gather(
+            *(_embed_one_batch(batch, i) for i, batch in enumerate(batches))
+        )
+
+        # Flatten results while preserving order
+        all_embeddings = []
+        for batch_embeddings in batch_results:
+            all_embeddings.extend(batch_embeddings)
+
+        return all_embeddings
 
 
 class EmbeddingRegistry:
