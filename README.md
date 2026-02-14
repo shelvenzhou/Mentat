@@ -4,14 +4,14 @@
 >
 > _Next-generation Agentic RAG system that transforms "Content Retrieval" into "Strategy Retrieval"._
 
-Mentat solves the **"Token Explosion"** problem in traditional RAG. Instead of feeding raw documents to an LLM, Mentat uses statistical probes to extract **semantic fingerprints** — compact representations of structure, metadata, and key content — then a two-phase Librarian LLM generates per-chunk summaries and **Reading Guides**: actionable instructions on how to efficiently use each file.
+Mentat solves the **"Token Explosion"** problem in traditional RAG. Instead of feeding raw documents to an LLM, Mentat uses statistical probes to extract **semantic fingerprints** — compact representations of structure, metadata, and key content — then generates per-chunk summaries (optional) and template-based **Reading Guides**: actionable instructions on how to efficiently use each file.
 
 ---
 
 ## Features
 
 - **Semantic Fingerprinting**: Probes extract `Hierarchy + Metadata + Anchors + Snippets` from every file — enough for an LLM to make decisions without reading the full document.
-- **Two-Phase Librarian**: Phase 1 summarises each chunk via LLM (batched, concurrent); Phase 2 generates a strategic reading guide from ToC + summaries + statistics — noting what data is present, what's truncated, and how to access the raw file.
+- **Smart Instruction Generation**: Template-based reading guides generated from ToC + statistics — noting what data is present, what's truncated, and how to access the raw file. Optional LLM-based chunk summarization available for deeper semantic understanding.
 - **Smart Bypass**: Small files (< 1000 tokens) skip skeleton extraction and return full content directly — cheaper than summarizing.
 - **13 Format Probes**: PDF, images, Word, PowerPoint, calendars, archives, CSV, JSON, configs, code, logs, Markdown, and HTML — all without LLM calls.
 - **Strategy Retrieval**: Returns _instructions_ (e.g., "Filter Column B for values > 100") alongside data.
@@ -82,14 +82,14 @@ Each probe extracts a `ProbeResult` containing: topic summary, hierarchical tabl
 
 Probes are tried in order (most specific first); first match wins. Image, Word, PowerPoint, and Calendar probes degrade gracefully if their dependencies are missing.
 
-### Layer 3: The Librarian (Two-Phase Instruction Generation)
+### Layer 3: The Librarian (Summarization & Instruction Generation)
 
-1. **Phase 1 — Chunk Summarisation**: LLM generates a 1-3 sentence summary for each chunk (batched, concurrent). Small files (`is_full_content`) bypass summarisation — content IS the summary.
-2. **Phase 2 — Instruction Generation**: LLM receives ToC + chunk summaries + statistics and produces:
+1. **Phase 1 — Chunk Summarisation (Optional)**: LLM generates a 1-3 sentence summary for each chunk (batched, concurrent). Small files (`is_full_content`) bypass summarisation — content IS the summary. Can be disabled for faster indexing.
+2. **Phase 2 — Instruction Generation**: Template-based generation from ToC + statistics produces:
    - `brief_intro`: 1-2 sentence overview
    - `instructions`: actionable reading guide noting what data is present, what is missing/truncated, and how to access the raw file for details
 
-Uses **litellm** — supports OpenAI, Claude, Gemini, Ollama, etc. Original raw files are always stored for future detailed access.
+Uses **litellm** for chunk summarization (when enabled) — supports OpenAI, Claude, Gemini, Ollama, etc. Original raw files are always stored for future detailed access.
 
 ---
 
@@ -115,8 +115,8 @@ cp .env.example .env
 Key settings in `.env`:
 
 ```bash
-# Summary / Librarian model (used for chunk summarisation + instruction generation)
-MENTAT_SUMMARY_MODEL=openai/gpt-4o         # any litellm model string
+# Summary model (used for optional chunk summarisation)
+MENTAT_SUMMARY_MODEL=openai/gpt-4o-mini    # any litellm model string
 # MENTAT_SUMMARY_API_KEY=                   # optional, overrides global key
 # MENTAT_SUMMARY_API_BASE=                  # optional, custom endpoint
 

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Mentat is a next-generation Agentic RAG system (Python 3.10+) that transforms "Content Retrieval" into "Strategy Retrieval." Instead of feeding raw documents to an LLM, Mentat uses statistical probes to extract **semantic fingerprints** (hierarchy + metadata + anchors + snippets), then a Librarian LLM generates actionable reading guides. Small files (< 1000 tokens) bypass skeleton extraction and return full content directly.
+Mentat is a next-generation Agentic RAG system (Python 3.10+) that transforms "Content Retrieval" into "Strategy Retrieval." Instead of feeding raw documents to an LLM, Mentat uses statistical probes to extract **semantic fingerprints** (hierarchy + metadata + anchors + snippets), then generates template-based actionable reading guides. Small files (< 1000 tokens) bypass skeleton extraction and return full content directly.
 
 ## Development Setup
 
@@ -70,14 +70,14 @@ Three-layer design where each layer feeds into the next:
   - **Markdown** (`markdown_probe.py`) — regex; heading hierarchy with preview/annotation, section-aware chunks. Code-fence-aware header detection filters out `#` comments inside fenced blocks.
   - **Web/HTML** (`web_probe.py`) — trafilatura + regex; heading structure, meta tags, semantic elements
 
-**Layer 3 — Librarian (Two-Phase Instruction Generation):** `mentat/librarian/`
+**Layer 3 — Librarian (Summarization & Template-based Instruction Generation):** `mentat/librarian/`
 - Uses `litellm` for LLM calls (supports OpenAI, Claude, Gemini, Ollama, etc.)
 - Takes **only** `ProbeResult` as input — never reads raw files
-- **Phase 1 — Chunk Summarisation** (`summary_model`): fast/cheap LLM generates a 1-3 sentence summary for each chunk (batched, concurrent). Small files (`is_full_content`) bypass summarisation. Embeddings are also computed concurrently.
-- **Phase 2 — Instruction Generation** (`instruction_model`): smart LLM receives ToC + chunk summaries + statistics and produces:
+- **Phase 1 — Chunk Summarisation** (`summary_model`, optional): fast/cheap LLM generates a 1-3 sentence summary for each chunk (batched, concurrent). Small files (`is_full_content`) bypass summarisation. Embeddings are also computed concurrently.
+- **Phase 2 — Instruction Generation** (template-based, no LLM): receives ToC + statistics and produces:
   - `brief_intro`: 1-2 sentence overview
   - `instructions`: actionable reading guide noting what data is present, what is missing/truncated, and how to access the raw file for details
-- Chunk summaries are stored alongside chunks in the vector DB for retrieval
+- Chunk summaries (when generated) are stored alongside chunks in the vector DB for retrieval
 - Original raw files are always kept in `LocalFileStore` for downstream detailed access
 
 **Orchestrator:** `mentat/core/hub.py`
@@ -122,4 +122,4 @@ Three-layer design where each layer feeds into the next:
   - **Two-stage storage**: Stubs stored immediately (with ToC), chunks stored after background processing
   - **Lifecycle management**: Call `await mentat.start_processor()` once on app startup, `await mentat.shutdown()` on exit
   - **Search integration**: `search()` automatically boosts priority for pending docs and annotates results with processing status
-- **Environment config** — `.env` file loaded at import via `python-dotenv`; `MentatConfig` resolves: explicit arg > env var (`MENTAT_*`) > default. Separate `api_key`/`api_base` for summary model (`MENTAT_SUMMARY_*`), instruction model (`MENTAT_INSTRUCTION_*`), and embedding model (`MENTAT_EMBEDDING_*`); instruction model falls back to summary model when not set. Global provider keys (`OPENAI_API_KEY`, etc.) are read natively by `litellm` as fallback. Vector dimension is auto-detected from the first embedding call (lazy chunks table creation). NEW: `MENTAT_MAX_CONCURRENT_TASKS` (default: 3) controls background processing concurrency.
+- **Environment config** — `.env` file loaded at import via `python-dotenv`; `MentatConfig` resolves: explicit arg > env var (`MENTAT_*`) > default. Separate `api_key`/`api_base` for summary model (`MENTAT_SUMMARY_*`) and embedding model (`MENTAT_EMBEDDING_*`). Global provider keys (`OPENAI_API_KEY`, etc.) are read natively by `litellm` as fallback. Vector dimension is auto-detected from the first embedding call (lazy chunks table creation). NEW: `MENTAT_MAX_CONCURRENT_TASKS` (default: 3) controls background processing concurrency.

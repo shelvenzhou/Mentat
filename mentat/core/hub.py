@@ -59,11 +59,6 @@ class MentatConfig:
     summary_api_key: str = ""
     summary_api_base: str = ""
 
-    # Instruction model — Phase 2: document-level reading guide (use a smart model)
-    instruction_model: str = ""
-    instruction_api_key: str = ""
-    instruction_api_base: str = ""
-
     # Embedding model
     embedding_provider: str = ""
     embedding_model: str = ""
@@ -79,7 +74,7 @@ class MentatConfig:
             "MENTAT_STORAGE_DIR", "./mentat_files"
         )
 
-        # Phase 1: Summary model (fast/cheap — bulk chunk summarisation)
+        # Summary model (fast/cheap — bulk chunk summarisation)
         self.summary_model = self.summary_model or os.getenv(
             "MENTAT_SUMMARY_MODEL", "gpt-4o-mini"
         )
@@ -89,18 +84,6 @@ class MentatConfig:
         self.summary_api_base = self.summary_api_base or os.getenv(
             "MENTAT_SUMMARY_API_BASE", ""
         )
-
-        # Phase 2: Instruction model (smart — document-level guide)
-        # Falls back to summary_model if not set.
-        self.instruction_model = self.instruction_model or os.getenv(
-            "MENTAT_INSTRUCTION_MODEL", ""
-        ) or self.summary_model
-        self.instruction_api_key = self.instruction_api_key or os.getenv(
-            "MENTAT_INSTRUCTION_API_KEY", ""
-        ) or self.summary_api_key
-        self.instruction_api_base = self.instruction_api_base or os.getenv(
-            "MENTAT_INSTRUCTION_API_BASE", ""
-        ) or self.summary_api_base
 
         # Embedding
         self.embedding_provider = self.embedding_provider or os.getenv(
@@ -145,10 +128,7 @@ class Mentat:
 
         # Layer 3: Librarian
         self.librarian = Librarian(
-            model=self.config.instruction_model,
             summary_model=self.config.summary_model,
-            api_key=self.config.instruction_api_key or None,
-            api_base=self.config.instruction_api_base or None,
             summary_api_key=self.config.summary_api_key or None,
             summary_api_base=self.config.summary_api_base or None,
         )
