@@ -19,6 +19,7 @@ from mentat.core.queue import (
     build_chunk_records,
     prepare_embed_texts,
 )
+from mentat.core.access_tracker import AccessTracker
 from mentat.probes import get_probe, run_probe
 from mentat.probes.base import ProbeResult
 from mentat.probes._utils import estimate_tokens
@@ -74,6 +75,10 @@ class MentatConfig:
     # Background processing
     max_concurrent_tasks: int = 5
 
+    # Access tracking
+    access_recent_size: int = 200
+    access_hot_size: int = 50
+
     # Chunk normalization
     chunk_target_tokens: int = 1000
 
@@ -111,6 +116,14 @@ class MentatConfig:
         # Background processing
         self.max_concurrent_tasks = int(
             os.getenv("MENTAT_MAX_CONCURRENT_TASKS", str(self.max_concurrent_tasks))
+        )
+
+        # Access tracking
+        self.access_recent_size = int(
+            os.getenv("MENTAT_ACCESS_RECENT_SIZE", str(self.access_recent_size))
+        )
+        self.access_hot_size = int(
+            os.getenv("MENTAT_ACCESS_HOT_SIZE", str(self.access_hot_size))
         )
 
         # Chunk normalization
@@ -160,6 +173,13 @@ class Mentat:
 
         # Adaptors
         self._adaptors: List[BaseAdaptor] = []
+
+        # Access tracker (two-layer FIFO for on-demand embedding)
+        self.access_tracker = AccessTracker(
+            recent_size=self.config.access_recent_size,
+            hot_size=self.config.access_hot_size,
+            on_promote=self._on_access_promote,
+        )
 
         # Background processor (async queue system)
         self.processor = BackgroundProcessor(self, max_concurrent=self.config.max_concurrent_tasks)
@@ -371,6 +391,141 @@ class Mentat:
         self.logger.debug(
             f"Inline: stored {len(chunk_records)} chunks for {doc_id}"
         )
+
+    async def add_batch(
+        self,
+        paths: List[str],
+        force: bool = False,
+        summarize: bool = False,
+    ) -> List[str]:
+        """Index multiple files efficiently with batched embedding.
+
+        Probes all files first, collects all chunks, then embeds them in a
+        single batched API call. Much faster than calling ``add(wait=True)``
+        in a loop when indexing many files at once.
+
+        Args:
+            paths: List of file paths to index.
+            force: Re-index even if cached.
+            summarize: Enable LLM-based chunk summarization.
+
+        Returns:
+            List of document IDs in the same order as ``paths``.
+        """
+        # Phase 1: Probe all files and store stubs
+        doc_ids: List[str] = []
+        probe_results: List[Optional[ProbeResult]] = []
+        filenames: List[str] = []
+
+        for path in paths:
+            # Cache check
+            if not force:
+                cached_id = self.cache.get(path)
+                if cached_id:
+                    self.logger.info(f"Cache hit for {path} -> {cached_id}")
+                    doc_ids.append(cached_id)
+                    probe_results.append(None)
+                    filenames.append(Path(path).name)
+                    continue
+
+            doc_id = str(uuid.uuid4())
+            filename = Path(path).name
+
+            with Telemetry.time_it(doc_id, "probe"):
+                probe_result = run_probe(path)
+                probe_result.doc_id = doc_id
+                probe_result.filename = filename
+
+            # Normalize chunk sizes for optimal retrieval performance
+            from mentat.probes._utils import normalize_chunk_sizes
+            probe_result.chunks = normalize_chunk_sizes(
+                probe_result.chunks,
+                target_tokens=self.config.chunk_target_tokens,
+            )
+
+            Telemetry.record_chunks(doc_id, len(probe_result.chunks))
+
+            with Telemetry.time_it(doc_id, "librarian"):
+                brief_intro, instructions = self.librarian.generate_guide_template(
+                    probe_result
+                )
+
+            self.storage.add_stub(
+                doc_id=doc_id,
+                filename=filename,
+                brief_intro=brief_intro,
+                instruction=instructions,
+                probe_json=json.dumps(probe_result.model_dump(), default=str),
+            )
+            self.file_store.save(path, doc_id)
+            self.cache.put(path, doc_id)
+
+            original_size = os.path.getsize(path)
+            stub_size = len(brief_intro.encode("utf-8"))
+            Telemetry.record_savings(doc_id, 1.0 - (stub_size / max(1, original_size)))
+
+            doc_ids.append(doc_id)
+            probe_results.append(probe_result)
+            filenames.append(filename)
+
+        # Phase 2: Collect ALL chunks and embed in one batched call
+        all_embed_texts: List[str] = []
+        all_chunk_mappings: List[Any] = []
+        file_boundaries: List[int] = []  # cumulative count of embed texts per file
+        files_to_process: List[int] = []  # indices of files that need embedding
+
+        for idx, pr in enumerate(probe_results):
+            if pr is None or not pr.chunks:
+                continue
+            files_to_process.append(idx)
+            texts, mapping = prepare_embed_texts(pr.chunks)
+            all_embed_texts.extend(texts)
+            all_chunk_mappings.append(mapping)
+            file_boundaries.append(len(all_embed_texts))
+
+        if all_embed_texts:
+            self.logger.info(
+                f"Batch embedding {len(all_embed_texts)} texts from "
+                f"{len(files_to_process)} files"
+            )
+
+            # Single batched embedding call for all files
+            all_vectors = await self.embeddings.embed_batch(all_embed_texts)
+
+            # Optional: batch summarization concurrently
+            if summarize:
+                summ_tasks = [
+                    self.librarian.summarize_chunks(probe_results[idx])
+                    for idx in files_to_process
+                ]
+                all_summaries = await asyncio.gather(*summ_tasks)
+            else:
+                all_summaries = [
+                    [""] * len(probe_results[idx].chunks)
+                    for idx in files_to_process
+                ]
+
+            # Distribute vectors back to files and store
+            vec_start = 0
+            for i, file_idx in enumerate(files_to_process):
+                vec_end = file_boundaries[i]
+                pr = probe_results[file_idx]
+                vectors = all_vectors[vec_start:vec_end]
+                summaries = all_summaries[i]
+                mapping = all_chunk_mappings[i]
+
+                records = build_chunk_records(
+                    doc_ids[file_idx], filenames[file_idx],
+                    pr.chunks, vectors, summaries, mapping,
+                )
+                if records:
+                    vector_dim = len(vectors[0])
+                    self.storage._ensure_chunks_table(vector_dim)
+                    self.storage.add_chunks(records)
+
+                vec_start = vec_end
+
+        return doc_ids
 
     def get_processing_status(self, doc_id: str) -> Dict[str, Any]:
         """Get current processing status for a document.
@@ -624,6 +779,249 @@ class Mentat:
 
         return True
 
+    async def _on_access_promote(self, key: str) -> None:
+        """Callback fired when a key is promoted to the hot queue.
+
+        If the file is already indexed, triggers on-demand summarization for
+        its chunks.  Otherwise, indexes from scratch with summarization enabled.
+        """
+        path = Path(key)
+        if not path.is_file():
+            self.logger.debug(f"Hot key is not a file, skipping auto-index: {key}")
+            return
+
+        # Check if already indexed — if so, just generate summaries
+        cached_id = self.cache.get(key)
+        if cached_id:
+            self.logger.info(f"Hot promote: triggering summarization for existing doc {cached_id}")
+            await self.summarize_doc(cached_id)
+        else:
+            self.logger.info(f"Hot promote: indexing new file with summarization: {key}")
+            await self.add(key, summarize=True)
+
+    async def track_access(self, path: str) -> Dict[str, Any]:
+        """Record a file access event and return tracking status.
+
+        If the file has been accessed before while still in the recent queue,
+        it is promoted to the hot queue and auto-indexed with summarization.
+
+        Returns:
+            Dict with keys: promoted, is_hot, is_recent, tracker_stats
+        """
+        resolved = str(Path(path).resolve())
+        promoted = await self.access_tracker.track(resolved)
+        return {
+            "path": resolved,
+            "promoted": promoted,
+            "is_hot": self.access_tracker.is_hot(resolved),
+            "is_recent": self.access_tracker.is_recent(resolved),
+            "tracker_stats": self.access_tracker.stats(),
+        }
+
+    async def add_content(
+        self,
+        content: str,
+        filename: str,
+        content_type: str = "text/plain",
+        force: bool = False,
+        summarize: bool = False,
+        wait: bool = False,
+    ) -> str:
+        """Index raw content without requiring a file on disk.
+
+        Writes content to a temp file in the storage directory, then
+        delegates to the standard ``add()`` pipeline.  The content hash
+        is computed from the string itself for deduplication.
+
+        Args:
+            content: Raw text content to index.
+            filename: Logical filename (used for probe format detection).
+            content_type: MIME type hint (currently unused, reserved).
+            force: Re-index even if content hash matches an existing document.
+            summarize: Enable LLM-based chunk summarization.
+            wait: Block until background processing completes.
+
+        Returns:
+            Document ID.
+        """
+        import hashlib
+        import tempfile
+
+        # Content-based dedup: hash the content string
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if not force:
+            cached_id = self.cache.get_by_hash(content_hash)
+            if cached_id:
+                self.logger.info(f"Content cache hit for {filename} -> {cached_id}")
+                return cached_id
+
+        # Write content to a temp file so probes can read it
+        suffix = Path(filename).suffix or ".txt"
+        content_dir = Path(self.config.storage_dir) / "_content"
+        content_dir.mkdir(parents=True, exist_ok=True)
+
+        tmp_path = content_dir / f"{content_hash[:16]}{suffix}"
+        tmp_path.write_text(content, encoding="utf-8")
+
+        try:
+            doc_id = await self.add(
+                str(tmp_path),
+                force=force,
+                summarize=summarize,
+                wait=wait,
+            )
+            # Also store under the content hash for future dedup
+            self.cache.put_hash(content_hash, doc_id)
+            return doc_id
+        finally:
+            # Temp file can be cleaned up; raw file is stored by add()
+            pass
+
+    async def read_structured(
+        self,
+        path: str,
+        sections: Optional[List[str]] = None,
+        include_content: bool = False,
+    ) -> Dict[str, Any]:
+        """Return a structured, token-efficient view of a file.
+
+        For RAG consumers: instead of dumping raw file content, this returns
+        the table of contents, brief summary, instructions, and optionally
+        chunk summaries—typically 5-10x smaller than the raw file.
+
+        Flow:
+          1. If the file is already indexed, return inspect data with summaries.
+          2. If not indexed, run a fast probe (no LLM) for ToC + brief_intro.
+          3. Always track access (may trigger async embedding on repeat access).
+
+        Args:
+            path: Absolute or relative file path.
+            sections: Optional list of section names to filter results.
+            include_content: If True, include raw chunk text alongside summaries.
+
+        Returns:
+            Dict with doc_id, filename, file_type, brief_intro, toc, instructions,
+            chunks, processing_status, and token_estimate.
+        """
+        resolved = str(Path(path).resolve())
+
+        # Track access (may promote to hot queue → auto-index)
+        await self.track_access(resolved)
+
+        # Check if already indexed (via content hash cache)
+        cached_id = self.cache.get(resolved)
+
+        if cached_id:
+            # Already indexed — return rich data from storage
+            status_info = self.get_processing_status(cached_id)
+            processing_status = status_info.get("status", "completed")
+
+            stub = self.storage.get_stub(cached_id)
+            if not stub:
+                processing_status = "not_indexed"
+            else:
+                result: Dict[str, Any] = {
+                    "doc_id": cached_id,
+                    "filename": stub.get("filename", Path(resolved).name),
+                    "brief_intro": stub.get("brief_intro", ""),
+                    "instructions": stub.get("instruction", ""),
+                    "processing_status": processing_status,
+                }
+
+                # Parse probe JSON for ToC and file_type
+                probe_json = stub.get("probe_json", "")
+                if probe_json:
+                    try:
+                        probe_data = json.loads(probe_json)
+                        result["file_type"] = probe_data.get("file_type", "unknown")
+                        structure = probe_data.get("structure", {})
+                        toc = structure.get("toc", [])
+                        if sections:
+                            section_set = set(s.lower() for s in sections)
+                            toc = [
+                                e for e in toc
+                                if e.get("title", "").lower() in section_set
+                            ]
+                        result["toc"] = toc
+                    except json.JSONDecodeError:
+                        result["file_type"] = "unknown"
+                        result["toc"] = []
+
+                # Fetch chunk summaries if available
+                chunk_rows = self.storage.get_chunks_by_doc(cached_id)
+                if chunk_rows:
+                    chunks_out = []
+                    for r in chunk_rows:
+                        chunk_section = r.get("section", "")
+                        if sections:
+                            section_set = set(s.lower() for s in sections)
+                            if chunk_section.lower() not in section_set:
+                                continue
+                        entry: Dict[str, Any] = {
+                            "section": chunk_section,
+                            "summary": r.get("summary", ""),
+                        }
+                        if include_content:
+                            entry["content"] = r.get("content", "")
+                        chunks_out.append(entry)
+                    result["chunks"] = chunks_out
+                else:
+                    result["chunks"] = []
+
+                # Estimate token cost of this response
+                result["token_estimate"] = estimate_tokens(
+                    json.dumps(result, default=str)
+                )
+                return result
+
+        # Not indexed — run fast probe (no LLM, ~1s)
+        try:
+            probe_result = run_probe(resolved)
+        except ValueError:
+            return {
+                "doc_id": None,
+                "filename": Path(resolved).name,
+                "file_type": "unknown",
+                "brief_intro": "",
+                "toc": [],
+                "instructions": "",
+                "chunks": [],
+                "processing_status": "unsupported",
+                "token_estimate": 0,
+            }
+
+        brief_intro, instructions = self.librarian.generate_guide_template(probe_result)
+        toc = [e.model_dump() for e in (probe_result.structure.toc or [])]
+
+        if sections:
+            section_set = set(s.lower() for s in sections)
+            toc = [e for e in toc if e.get("title", "").lower() in section_set]
+
+        chunks_out = []
+        for chunk in probe_result.chunks:
+            if sections:
+                section_set = set(s.lower() for s in sections)
+                if (chunk.section or "").lower() not in section_set:
+                    continue
+            entry = {"section": chunk.section or "", "summary": ""}
+            if include_content:
+                entry["content"] = chunk.content
+            chunks_out.append(entry)
+
+        result = {
+            "doc_id": None,
+            "filename": probe_result.filename or Path(resolved).name,
+            "file_type": probe_result.file_type or "unknown",
+            "brief_intro": brief_intro,
+            "toc": toc,
+            "instructions": instructions,
+            "chunks": chunks_out,
+            "processing_status": "not_indexed",
+            "token_estimate": 0,
+        }
+        result["token_estimate"] = estimate_tokens(json.dumps(result, default=str))
+        return result
+
     def stats(self) -> Dict[str, Any]:
         """Return system statistics."""
         return {
@@ -632,6 +1030,7 @@ class Mentat:
             "cached_hashes": len(self.cache),
             "storage_size_bytes": self.file_store.total_size(),
             "collections": len(self.collections_store.list_collections()),
+            "access_tracker": self.access_tracker.stats(),
         }
 
 

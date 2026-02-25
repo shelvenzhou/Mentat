@@ -440,5 +440,30 @@ def collection_remove(name, doc_id):
     click.echo(f"Removed {doc_id[:8]}… from '{name}'.")
 
 
+@cli.command()
+@click.option("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+@click.option("--port", "-p", default=7832, type=int, help="Port (default: 7832)")
+def serve(host, port):
+    """Start the Mentat HTTP server.
+
+    Exposes the full Mentat API over HTTP for use by external tools.
+
+    Examples:
+        mentat serve
+        mentat serve --port 8000
+        mentat serve --host 127.0.0.1 --port 9090
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        click.echo("uvicorn is required: pip install uvicorn[standard]")
+        raise SystemExit(1)
+
+    from mentat.server import create_app
+
+    click.echo(f"Starting Mentat server on {host}:{port}")
+    uvicorn.run(create_app(), host=host, port=port)
+
+
 if __name__ == "__main__":
     cli()

@@ -67,6 +67,15 @@ class ContentHashCache:
         self._cache[content_hash] = doc_id
         self._save()
 
+    def get_by_hash(self, content_hash: str) -> Optional[str]:
+        """Look up a doc_id by pre-computed content hash."""
+        return self._cache.get(content_hash)
+
+    def put_hash(self, content_hash: str, doc_id: str):
+        """Record a mapping from a pre-computed content hash to a doc_id."""
+        self._cache[content_hash] = doc_id
+        self._save()
+
     def remove(self, doc_id: str):
         """Remove a doc_id from cache (e.g. on re-index)."""
         self._cache = {h: d for h, d in self._cache.items() if d != doc_id}

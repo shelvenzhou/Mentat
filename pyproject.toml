@@ -29,6 +29,8 @@ dependencies = [
     "tree-sitter-json>=0.24.8",
     "tree-sitter-python>=0.25.0",
     "tree-sitter-typescript>=0.23.2",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
 ]
 
 [project.scripts]

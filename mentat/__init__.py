@@ -31,6 +31,21 @@ async def add(path: str, force: bool = False, **kwargs) -> str:
     return await Mentat.get_instance().add(path, force=force, **kwargs)
 
 
+async def add_batch(
+    paths: List[str], force: bool = False, summarize: bool = False
+) -> List[str]:
+    """Index multiple files with batched embedding (one API call for all chunks).
+
+    Much faster than calling ``add(wait=True)`` in a loop.
+
+    Returns:
+        List of document IDs in the same order as ``paths``.
+    """
+    return await Mentat.get_instance().add_batch(
+        paths, force=force, summarize=summarize
+    )
+
+
 async def search(
     query: str, top_k: int = 5, hybrid: bool = False
 ) -> List[MentatResult]:
@@ -137,9 +152,42 @@ async def wait_for(doc_id: str, timeout: float = 300) -> bool:
     return await Mentat.get_instance().wait_for_completion(doc_id, timeout=timeout)
 
 
+# --- Content & RAG APIs ---
+
+
+async def add_content(
+    content: str,
+    filename: str,
+    content_type: str = "text/plain",
+    force: bool = False,
+    **kwargs,
+) -> str:
+    """Index raw content without a file on disk. Returns document ID."""
+    return await Mentat.get_instance().add_content(
+        content, filename, content_type=content_type, force=force, **kwargs
+    )
+
+
+async def read_structured(
+    path: str,
+    sections: Optional[List[str]] = None,
+    include_content: bool = False,
+) -> dict:
+    """Return a structured, token-efficient view of a file (ToC + summaries)."""
+    return await Mentat.get_instance().read_structured(
+        path, sections=sections, include_content=include_content
+    )
+
+
+async def track_access(path: str) -> dict:
+    """Record a file access event. Frequently accessed files are auto-indexed."""
+    return await Mentat.get_instance().track_access(path)
+
+
 __all__ = [
     # Core APIs
     "add",
+    "add_batch",
     "search",
     "inspect",
     "probe",
@@ -152,6 +200,10 @@ __all__ = [
     "shutdown",
     "get_status",
     "wait_for",
+    # Content & RAG APIs
+    "add_content",
+    "read_structured",
+    "track_access",
     # Classes
     "Mentat",
     "MentatConfig",
