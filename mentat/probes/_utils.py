@@ -6,7 +6,8 @@ if TYPE_CHECKING:
     from mentat.probes.base import Chunk
 
 # Threshold below which probes should return full content instead of a skeleton.
-SMALL_FILE_TOKENS = 1000
+# Single files under this size skip skeleton extraction and return content directly.
+SMALL_FILE_TOKENS = 2000
 
 
 def estimate_tokens(text: str) -> int:
@@ -174,3 +175,256 @@ def merge_small_chunks(
 
     _flush()
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Chunk normalization (merge small + split large)
+# ---------------------------------------------------------------------------
+
+CHUNK_TARGET_TOKENS = 1000  # Default target chunk size for retrieval
+CHUNK_OVERLAP_TOKENS = 50   # Overlap between split pieces for context continuity
+CHUNK_MIN_TOKENS = 100      # Chunks below this are candidates for merging
+
+
+def _split_text(
+    text: str,
+    target_tokens: int = CHUNK_TARGET_TOKENS,
+    overlap_tokens: int = CHUNK_OVERLAP_TOKENS,
+) -> List[str]:
+    """Split text into fixed-size pieces at paragraph/sentence boundaries.
+
+    Splitting priority:
+      1. Paragraph boundaries (``\\n\\n``)
+      2. Sentence boundaries (``. `` followed by uppercase or newline)
+      3. Word boundaries (hard cut)
+
+    Each piece (except the first) starts with *overlap_tokens* worth of
+    trailing text from the previous piece to maintain context continuity.
+
+    Returns a list of text pieces.
+    """
+    if estimate_tokens(text) <= target_tokens:
+        return [text]
+
+    # Split into paragraphs
+    paragraphs = text.split("\n\n")
+
+    pieces: List[str] = []
+    current_parts: List[str] = []
+    current_tokens: int = 0
+
+    def _flush_current() -> None:
+        nonlocal current_parts, current_tokens
+        if current_parts:
+            pieces.append("\n\n".join(current_parts))
+            current_parts = []
+            current_tokens = 0
+
+    def _get_overlap_text(piece: str) -> str:
+        """Extract last ~overlap_tokens worth of text from a piece."""
+        if overlap_tokens <= 0:
+            return ""
+        words = piece.split()
+        # Convert token target to approximate word count
+        overlap_words = max(1, int(overlap_tokens / 1.3))
+        if len(words) <= overlap_words:
+            return piece
+        return " ".join(words[-overlap_words:])
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        para_tokens = estimate_tokens(para)
+
+        # Single paragraph exceeds target — split by sentences
+        if para_tokens > target_tokens:
+            _flush_current()
+            sentence_pieces = _split_by_sentences(para, target_tokens)
+            for sp in sentence_pieces:
+                if pieces and overlap_tokens > 0:
+                    overlap = _get_overlap_text(pieces[-1])
+                    pieces.append(overlap + "\n" + sp)
+                else:
+                    pieces.append(sp)
+            continue
+
+        # Would adding this paragraph exceed target?
+        if current_tokens + para_tokens > target_tokens and current_parts:
+            _flush_current()
+            # Start new piece with overlap from previous
+            if pieces and overlap_tokens > 0:
+                overlap = _get_overlap_text(pieces[-1])
+                current_parts = [overlap]
+                current_tokens = estimate_tokens(overlap)
+
+        current_parts.append(para)
+        current_tokens += para_tokens
+
+    _flush_current()
+
+    return pieces if pieces else [text]
+
+
+def _split_by_sentences(
+    text: str, target_tokens: int,
+) -> List[str]:
+    """Split a long paragraph into pieces at sentence boundaries.
+
+    Falls back to word-level splitting for very long sentences.
+    """
+    import re
+    # Split on sentence-ending punctuation followed by space
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+
+    pieces: List[str] = []
+    current_parts: List[str] = []
+    current_tokens: int = 0
+
+    for sent in sentences:
+        sent_tokens = estimate_tokens(sent)
+
+        # Single sentence exceeds target — hard word split
+        if sent_tokens > target_tokens:
+            if current_parts:
+                pieces.append(" ".join(current_parts))
+                current_parts = []
+                current_tokens = 0
+            # Word-level splitting
+            words = sent.split()
+            word_target = max(1, int(target_tokens / 1.3))
+            for i in range(0, len(words), word_target):
+                pieces.append(" ".join(words[i : i + word_target]))
+            continue
+
+        if current_tokens + sent_tokens > target_tokens and current_parts:
+            pieces.append(" ".join(current_parts))
+            current_parts = []
+            current_tokens = 0
+
+        current_parts.append(sent)
+        current_tokens += sent_tokens
+
+    if current_parts:
+        pieces.append(" ".join(current_parts))
+
+    return pieces if pieces else [text]
+
+
+def normalize_chunk_sizes(
+    chunks: List["Chunk"],
+    target_tokens: int = CHUNK_TARGET_TOKENS,
+    overlap_tokens: int = CHUNK_OVERLAP_TOKENS,
+    min_chunk_tokens: int = CHUNK_MIN_TOKENS,
+) -> List["Chunk"]:
+    """Normalize chunk sizes: merge very small chunks, split oversized ones.
+
+    Two-pass normalization that replaces ``merge_small_chunks`` as the
+    standard post-processing step:
+
+    **Pass 1 — Merge:** Adjacent chunks below *min_chunk_tokens* are merged
+    as long as the result stays within *target_tokens*.
+
+    **Pass 2 — Split:** Chunks exceeding *target_tokens* are split into
+    fixed-size pieces at paragraph/sentence boundaries with *overlap_tokens*
+    of overlap.  Each piece inherits the parent chunk's ``section``,
+    ``page``, and ``metadata``.
+
+    Returns a new list with fresh sequential ``index`` values.
+    """
+    from mentat.probes.base import Chunk
+
+    if not chunks:
+        return []
+
+    # ── Pass 1: merge small adjacent chunks ──────────────────────────
+    merged: List[Chunk] = []
+    acc_parts: List[str] = []
+    acc_tokens: int = 0
+    acc_section: Optional[str] = None
+    acc_page: Optional[int] = None
+    acc_meta: Dict[str, Any] = {}
+
+    def _flush_merge() -> None:
+        nonlocal acc_parts, acc_tokens, acc_section, acc_page, acc_meta
+        if acc_parts:
+            merged.append(
+                Chunk(
+                    content="\n\n".join(acc_parts),
+                    index=len(merged),
+                    section=acc_section,
+                    page=acc_page,
+                    metadata=acc_meta,
+                )
+            )
+            acc_parts = []
+            acc_tokens = 0
+            acc_section = None
+            acc_page = None
+            acc_meta = {}
+
+    for chunk in chunks:
+        tok = estimate_tokens(chunk.content)
+
+        if not acc_parts:
+            # Start new group
+            acc_parts = [chunk.content]
+            acc_tokens = tok
+            acc_section = chunk.section
+            acc_page = chunk.page
+            acc_meta = dict(chunk.metadata)
+            continue
+
+        combined = acc_tokens + tok
+
+        # Merge if both current accumulator and chunk are small enough
+        if acc_tokens < min_chunk_tokens and combined <= target_tokens:
+            acc_parts.append(chunk.content)
+            acc_tokens = combined
+            continue
+
+        if tok < min_chunk_tokens and combined <= target_tokens:
+            acc_parts.append(chunk.content)
+            acc_tokens = combined
+            continue
+
+        # Can't merge — flush and start new group
+        _flush_merge()
+        acc_parts = [chunk.content]
+        acc_tokens = tok
+        acc_section = chunk.section
+        acc_page = chunk.page
+        acc_meta = dict(chunk.metadata)
+
+    _flush_merge()
+
+    # ── Pass 2: split oversized chunks ───────────────────────────────
+    result: List[Chunk] = []
+
+    for chunk in merged:
+        tok = estimate_tokens(chunk.content)
+        if tok <= target_tokens:
+            result.append(
+                Chunk(
+                    content=chunk.content,
+                    index=len(result),
+                    section=chunk.section,
+                    page=chunk.page,
+                    metadata=chunk.metadata,
+                )
+            )
+        else:
+            # Split into fixed-size pieces
+            pieces = _split_text(chunk.content, target_tokens, overlap_tokens)
+            for piece_text in pieces:
+                result.append(
+                    Chunk(
+                        content=piece_text,
+                        index=len(result),
+                        section=chunk.section,
+                        page=chunk.page,
+                        metadata=dict(chunk.metadata),
+                    )
+                )
+
+    return result

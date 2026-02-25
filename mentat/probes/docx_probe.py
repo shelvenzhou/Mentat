@@ -9,7 +9,7 @@ from mentat.probes.base import (
     TocEntry,
     Chunk,
 )
-from mentat.probes._utils import estimate_tokens, should_bypass, extract_preview, merge_small_chunks
+from mentat.probes._utils import estimate_tokens, should_bypass, extract_preview
 from mentat.probes.instruction_templates import (
     DOCX_BRIEF_INTRO,
     DOCX_INSTRUCTIONS,
@@ -237,4 +237,4 @@ class DOCXProbe(BaseProbe):
             )
         if not chunks:
             return [Chunk(content="(empty document)", index=0)]
-        return merge_small_chunks(chunks)
+        return chunks

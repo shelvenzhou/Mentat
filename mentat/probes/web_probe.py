@@ -11,7 +11,7 @@ from mentat.probes.base import (
     TocEntry,
     Chunk,
 )
-from mentat.probes._utils import estimate_tokens, should_bypass, extract_preview, merge_small_chunks
+from mentat.probes._utils import estimate_tokens, should_bypass, extract_preview
 from mentat.probes.instruction_templates import (
     WEB_BRIEF_INTRO,
     WEB_INSTRUCTIONS,
@@ -324,4 +324,4 @@ class WebProbe(BaseProbe):
                 )
 
         chunks = chunks or [Chunk(content=content_text, index=0)]
-        return merge_small_chunks(chunks)
+        return chunks

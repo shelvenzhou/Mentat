@@ -17,16 +17,15 @@ def test_archive_templates():
     """Test archive probe templates have valid placeholders."""
     # Test ARCHIVE_BRIEF_INTRO
     placeholders = extract_placeholders(tpl.ARCHIVE_BRIEF_INTRO)
-    assert placeholders == {'format', 'file_count', 'size', 'dir_count'}
+    assert placeholders == {'format', 'module'}
 
     # Test formatting works
-    intro = tpl.ARCHIVE_BRIEF_INTRO.format(
-        format='ZIP', file_count=100, size='10 MB', dir_count=5
-    )
+    intro = tpl.ARCHIVE_BRIEF_INTRO.format(format='ZIP', module='zipfile')
     assert 'ZIP' in intro
 
     # Test ARCHIVE_INSTRUCTIONS
     placeholders = extract_placeholders(tpl.ARCHIVE_INSTRUCTIONS)
+    assert 'format' in placeholders
     assert 'extraction_code' in placeholders
 
     # Test extraction templates
@@ -36,32 +35,33 @@ def test_archive_templates():
 
 def test_csv_templates():
     """Test CSV probe templates have valid placeholders."""
-    placeholders = extract_placeholders(tpl.CSV_BRIEF_INTRO)
-    assert 'row_count' in placeholders and 'col_count' in placeholders
+    # CSV_BRIEF_INTRO is a static string (no placeholders)
+    assert isinstance(tpl.CSV_BRIEF_INTRO, str)
+    assert 'pandas' in tpl.CSV_BRIEF_INTRO
 
-    # Test outlier note
-    assert '{outlier_columns}' in tpl.CSV_OUTLIER_NOTE
+    # Test CSV_INSTRUCTIONS has sampling_strategy placeholder
+    placeholders = extract_placeholders(tpl.CSV_INSTRUCTIONS)
+    assert 'sampling_strategy' in placeholders
 
-    # Test sampling notes
-    assert '{row_count' in tpl.CSV_SAMPLING_NOTE_SAMPLED
+    # Test sampling notes are static strings
+    assert isinstance(tpl.CSV_SAMPLING_NOTE_FULL, str)
+    assert isinstance(tpl.CSV_SAMPLING_NOTE_SAMPLED, str)
 
 
 def test_code_templates():
     """Test code probe templates have valid placeholders."""
     placeholders = extract_placeholders(tpl.CODE_BRIEF_INTRO)
-    assert placeholders == {'language', 'class_count', 'function_count'}
+    assert placeholders == {'language'}
 
     placeholders = extract_placeholders(tpl.CODE_INSTRUCTIONS)
-    assert 'import_list' in placeholders
+    assert 'language' in placeholders
 
 
 def test_pdf_templates():
     """Test PDF probe templates have valid placeholders."""
-    assert '{page_count}' in tpl.PDF_BRIEF_INTRO
-    assert '{title_part}' in tpl.PDF_BRIEF_INTRO
+    assert '{toc_method}' in tpl.PDF_BRIEF_INTRO
 
     assert '{toc_source}' in tpl.PDF_INSTRUCTIONS
-    assert '{section_count}' in tpl.PDF_INSTRUCTIONS
 
 
 def test_all_templates_exist():

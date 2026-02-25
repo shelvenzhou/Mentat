@@ -14,7 +14,15 @@ Template Guidelines:
 - Instructions: explain extraction method, chunking strategy, and limitations
 - Focus on probe behavior, not data summary (LLM already has ToC/Stats)
 - Keep templates concise but informative (10-20 lines)
+- Threshold values come from _utils constants via _SF / _CT below
 """
+
+from mentat.probes._utils import SMALL_FILE_TOKENS, CHUNK_TARGET_TOKENS
+
+# Short aliases for use in template strings below.
+# Changing the constants in _utils.py automatically updates all templates.
+_SF = SMALL_FILE_TOKENS   # small-file bypass threshold
+_CT = CHUNK_TARGET_TOKENS  # chunk normalization target
 
 # ==============================================================================
 # ARCHIVE PROBE - ZIP/TAR archives
@@ -76,8 +84,8 @@ CSV_SAMPLING_NOTE_SAMPLED = "representative sample (first, middle, last row only
 
 CODE_BRIEF_INTRO = "{language} source code analyzed via tree-sitter AST parsing."
 
-CODE_INSTRUCTIONS = """Extraction Method:
-- Language: {language}
+CODE_INSTRUCTIONS = f"""Extraction Method:
+- Language: {{language}}
 - AST parsing via tree-sitter (syntax-aware, not regex-based)
 - Hierarchical ToC: Level 1 = classes/top-level functions, Level 2 = methods
 - Import statements extracted from module-level nodes
@@ -88,7 +96,7 @@ CODE_INSTRUCTIONS = """Extraction Method:
 Chunking Strategy:
 - One chunk per top-level definition (class or function)
 - Function bodies omitted for brevity
-- Small files (< 1000 tokens) return full content
+- Small files (< {_SF} tokens) return full content
 
 Data Limitations:
 - Function bodies not included (implementation details omitted)
@@ -159,7 +167,7 @@ Data Limitations:
 
 DOCX_BRIEF_INTRO = "Word document analyzed via python-docx with style-based hierarchy detection."
 
-DOCX_INSTRUCTIONS = """Extraction Method:
+DOCX_INSTRUCTIONS = f"""Extraction Method:
 - Heading detection via style regex: "Heading 1", "Heading 2", etc.
 - List detection via style names containing "List"
 - Table headers extracted (first 5 tables only, pipe-separated)
@@ -170,8 +178,7 @@ DOCX_INSTRUCTIONS = """Extraction Method:
 
 Chunking Strategy:
 - One chunk per heading section (heading + paragraphs until next heading)
-- Small chunks merged via merge_small_chunks() (< 300 tokens → merge, max 1200 merged)
-- H1/H2 boundaries respected (no merging across major sections)
+- Chunk sizes normalized at indexing time (small merged, large split at ~{_CT} tokens)
 - Annotations: "List, N items | M paragraphs"
 
 Data Limitations:
@@ -241,7 +248,7 @@ Data Limitations:
 
 JSON_BRIEF_INTRO = "JSON document analyzed via Python json module with schema inference."
 
-JSON_INSTRUCTIONS = """Extraction Method:
+JSON_INSTRUCTIONS = f"""Extraction Method:
 - Schema tree inferred recursively with max depth 3
 - String values truncated at 40 chars in schema representation
 - Value previews: 30 head + 15 tail chars with ellipsis
@@ -252,7 +259,7 @@ Chunking Strategy:
 - Root is dict: one chunk per top-level key (re-serialized JSON)
 - Root is array: single chunk with first item as sample
 - Root is primitive: single chunk with complete value
-- Small chunks merged (< 300 tokens) for efficiency
+- Chunk sizes normalized at indexing time (small merged, large split at ~{_CT} tokens)
 
 Data Limitations:
 - Schema depth limited to 3 levels for ToC (actual depth tracked in stats)
@@ -268,20 +275,20 @@ Data Limitations:
 
 CONFIG_BRIEF_INTRO = "{format} configuration analyzed via {parser} with recursive key traversal."
 
-CONFIG_INSTRUCTIONS = """Extraction Method:
-- Format detected: {format}
-- Parser: {parser_info}
+CONFIG_INSTRUCTIONS = f"""Extraction Method:
+- Format detected: {{format}}
+- Parser: {{parser_info}}
 - Key hierarchy walked recursively with max depth 3
 - Value types inferred from parsed data
 - Top-level keys shown (first 5 + "..." if more)
 - INI handling: sections extracted + DEFAULT section synthesized
 
 Chunking Strategy:
-- Full content returned for most configs (< 1000 tokens typical)
+- Full content returned for most configs (< {_SF} tokens typical)
 - Large files chunked at 2000 char boundaries
 
 Data Limitations:
-- Variable interpolation not analyzed (YAML anchors, env var references like ${{VAR}})
+- Variable interpolation not analyzed (YAML anchors, env var references like ${{{{VAR}}}})
 - Secrets not flagged (recommend manual review for API keys/passwords)
 - Include directives not followed (external file references in configs)
 - Conditional sections not evaluated (feature flags, environment-based config)
@@ -297,7 +304,7 @@ CONFIG_PARSER_INI = "configparser"
 
 LOG_BRIEF_INTRO = "Log file analyzed via regex-based format detection and keyword extraction."
 
-LOG_INSTRUCTIONS = """Extraction Method:
+LOG_INSTRUCTIONS = f"""Extraction Method:
 - Format detection via regex sampling (50%+ match threshold)
 - Formats supported: JSONL, syslog, Apache CLF, ISO timestamp, custom
 - Timestamp extraction from first/last 20 lines (multiple patterns tried)
@@ -306,7 +313,7 @@ LOG_INSTRUCTIONS = """Extraction Method:
 - Level statistics computed across all lines
 
 Chunking Strategy:
-- Small files (< 1000 tokens): full log
+- Small files (< {_SF} tokens): full log
 - Large files: head (5 lines) + tail (5 lines) + error sample (5 error lines)
 
 Data Limitations:
@@ -322,7 +329,7 @@ Data Limitations:
 
 MARKDOWN_BRIEF_INTRO = "Markdown document analyzed via regex-based heading detection with code-fence filtering."
 
-MARKDOWN_INSTRUCTIONS = """Extraction Method:
+MARKDOWN_INSTRUCTIONS = f"""Extraction Method:
 - Heading detection: regex for H1-H6 (# through ######)
 - Code fence filtering: headers inside ``` blocks excluded from ToC
 - Section annotations: lists, code blocks, links, line counts
@@ -330,11 +337,9 @@ MARKDOWN_INSTRUCTIONS = """Extraction Method:
 - Heading density computed: ratio of heading lines to total lines
 
 Chunking Strategy:
-- Small files (< 1000 tokens): full content
+- Small files (< {_SF} tokens): full content
 - High heading density (> 25% AND < 3000 tokens): full content for context
-- Otherwise: split by headers with merge_small_chunks() applied
-- H1/H2 boundaries respected (no merging across major sections)
-- Small chunks merged (< 300 tokens → merge, max 1200 tokens merged)
+- Otherwise: split by headers, normalized at indexing time (~{_CT} tokens target)
 
 Data Limitations:
 - Blockquotes not separately indexed
@@ -351,7 +356,7 @@ Data Limitations:
 
 WEB_BRIEF_INTRO = "HTML page analyzed via trafilatura (content extraction) and regex (structure parsing)."
 
-WEB_INSTRUCTIONS = """Extraction Method:
+WEB_INSTRUCTIONS = f"""Extraction Method:
 - Dual extraction: trafilatura for clean text, regex for HTML structure
 - Heading hierarchy: H1-H6 detected via regex
 - Semantic elements: nav, header, main, article, section, footer, aside (presence noted)
@@ -361,8 +366,8 @@ WEB_INSTRUCTIONS = """Extraction Method:
 - Content length and word count computed from trafilatura output
 
 Chunking Strategy:
-- Small files (< 1000 tokens clean text): full content
-- Otherwise: split by heading sections with merge_small_chunks() applied
+- Small files (< {_SF} tokens clean text): full content
+- Otherwise: split by heading sections, normalized at indexing time (~{_CT} tokens target)
 - Fallback: paragraph splitting on \\n\\n if heading-based fails
 
 Data Limitations:

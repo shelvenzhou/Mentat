@@ -9,7 +9,7 @@ from mentat.probes.base import (
     TocEntry,
     Chunk,
 )
-from mentat.probes._utils import estimate_tokens, extract_preview, merge_small_chunks, SMALL_FILE_TOKENS
+from mentat.probes._utils import estimate_tokens, extract_preview, SMALL_FILE_TOKENS
 from mentat.probes.instruction_templates import (
     MARKDOWN_BRIEF_INTRO,
     MARKDOWN_INSTRUCTIONS,
@@ -278,4 +278,4 @@ class MarkdownProbe(BaseProbe):
                     )
                 )
 
-        return merge_small_chunks(chunks)
+        return chunks

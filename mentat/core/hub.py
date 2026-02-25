@@ -16,6 +16,7 @@ from mentat.core.embeddings import EmbeddingRegistry
 from mentat.core.queue import BackgroundProcessor, ProcessingTask
 from mentat.probes import get_probe, run_probe
 from mentat.probes.base import ProbeResult
+from mentat.probes._utils import estimate_tokens
 from mentat.librarian.engine import Librarian
 from mentat.storage.vector_db import LanceDBStorage
 from mentat.storage.file_store import LocalFileStore
@@ -68,6 +69,9 @@ class MentatConfig:
     # Background processing
     max_concurrent_tasks: int = 5
 
+    # Chunk normalization
+    chunk_target_tokens: int = 1000
+
     def __post_init__(self):
         self.db_path = self.db_path or os.getenv("MENTAT_DB_PATH", "./mentat_db")
         self.storage_dir = self.storage_dir or os.getenv(
@@ -102,6 +106,11 @@ class MentatConfig:
         # Background processing
         self.max_concurrent_tasks = int(
             os.getenv("MENTAT_MAX_CONCURRENT_TASKS", str(self.max_concurrent_tasks))
+        )
+
+        # Chunk normalization
+        self.chunk_target_tokens = int(
+            os.getenv("MENTAT_CHUNK_TARGET_TOKENS", str(self.chunk_target_tokens))
         )
 
 
@@ -237,6 +246,13 @@ class Mentat:
             probe_result = run_probe(path)
             probe_result.doc_id = doc_id
             probe_result.filename = filename
+
+        # Normalize chunk sizes for optimal retrieval performance
+        from mentat.probes._utils import normalize_chunk_sizes
+        probe_result.chunks = normalize_chunk_sizes(
+            probe_result.chunks,
+            target_tokens=self.config.chunk_target_tokens,
+        )
 
         Telemetry.record_chunks(doc_id, len(probe_result.chunks))
 
