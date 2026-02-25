@@ -13,7 +13,12 @@ from dotenv import load_dotenv
 
 from mentat.core.telemetry import Telemetry
 from mentat.core.embeddings import EmbeddingRegistry
-from mentat.core.queue import BackgroundProcessor, ProcessingTask
+from mentat.core.queue import (
+    BackgroundProcessor,
+    ProcessingTask,
+    build_chunk_records,
+    prepare_embed_texts,
+)
 from mentat.probes import get_probe, run_probe
 from mentat.probes.base import ProbeResult
 from mentat.probes._utils import estimate_tokens
@@ -288,20 +293,6 @@ class Mentat:
         # Record in content hash cache
         self.cache.put(path, doc_id)
 
-        # ── Queue background processing ──────────────────────────────
-        # Create processing task for embedding + summarization
-        task = ProcessingTask(
-            doc_id=doc_id,
-            probe_result=probe_result,
-            priority=10 if wait else 0,  # Higher priority if user is waiting
-            needs_summarization=summarize,
-        )
-
-        await self.processor.queue.submit(task)
-        self.logger.info(
-            f"Queued background processing for {filename} (summarize={summarize})"
-        )
-
         # Telemetry for immediate return
         original_size = os.path.getsize(path)
         stub_size = len(brief_intro.encode("utf-8"))
@@ -314,22 +305,72 @@ class Mentat:
                 doc_id, {"filename": filename, "brief_intro": brief_intro}
             )
 
-        # ── Return immediately or wait ───────────────────────────────
+        # ── Inline processing (wait=True) or queue (wait=False) ───────
         if wait:
-            self.logger.info(f"Waiting for background processing to complete...")
-            completed = await self.wait_for_completion(doc_id, timeout=300)
-            if completed:
-                self.logger.info(f"Successfully indexed {filename} (ID: {doc_id})")
-                print(Telemetry.format_stats(doc_id))
-            else:
-                self.logger.warning(f"Processing timeout for {doc_id}")
-                print(f"⚠️ Processing timed out for {doc_id} (still running in background)")
+            # Direct inline path — bypass queue for lower latency
+            await self._process_chunks_inline(
+                doc_id, filename, probe_result, summarize
+            )
+            self.logger.info(f"Successfully indexed {filename} (ID: {doc_id})")
+            print(Telemetry.format_stats(doc_id))
         else:
-            self.logger.info(f"Returning immediately (ID: {doc_id})")
+            # Async queue path — return immediately
+            task = ProcessingTask(
+                doc_id=doc_id,
+                probe_result=probe_result,
+                priority=0,
+                needs_summarization=summarize,
+            )
+            await self.processor.queue.submit(task)
+            self.logger.info(
+                f"Queued background processing for {filename} (summarize={summarize})"
+            )
             print(f"⏳ Queued: {filename} → {doc_id} (processing in background)")
             print(Telemetry.format_stats(doc_id))
 
         return doc_id
+
+    async def _process_chunks_inline(
+        self,
+        doc_id: str,
+        filename: str,
+        probe_result: ProbeResult,
+        summarize: bool,
+    ) -> None:
+        """Embed and store chunks directly (no queue, no polling).
+
+        Used by ``add(wait=True)`` and ``add_batch()`` for lower latency.
+        """
+        chunks = probe_result.chunks
+        if not chunks:
+            return
+
+        embed_texts, chunk_mapping = prepare_embed_texts(chunks)
+
+        async def _noop_summaries():
+            return [""] * len(chunks)
+
+        # Run embedding + optional summarization concurrently
+        embed_coro = self.embeddings.embed_batch(embed_texts)
+        if summarize:
+            summ_coro = self.librarian.summarize_chunks(probe_result)
+        else:
+            summ_coro = _noop_summaries()
+
+        vectors, summaries = await asyncio.gather(embed_coro, summ_coro)
+
+        chunk_records = build_chunk_records(
+            doc_id, filename, chunks, vectors, summaries, chunk_mapping
+        )
+
+        if chunk_records:
+            vector_dim = len(vectors[0])
+            self.storage._ensure_chunks_table(vector_dim)
+            self.storage.add_chunks(chunk_records)
+
+        self.logger.debug(
+            f"Inline: stored {len(chunk_records)} chunks for {doc_id}"
+        )
 
     def get_processing_status(self, doc_id: str) -> Dict[str, Any]:
         """Get current processing status for a document.
@@ -438,38 +479,35 @@ class Mentat:
             query_vector, query, limit=top_k, use_hybrid=hybrid, doc_ids=doc_ids
         )
 
-        results = []
-        # Cache for document stubs (avoid repeated lookups)
-        stub_cache: Dict[str, Dict] = {}
+        if not raw_results:
+            return []
 
+        # Batch-fetch stubs for all unique doc_ids
+        unique_doc_ids = {r.get("doc_id", "") for r in raw_results}
+        stub_cache: Dict[str, Dict] = {}
+        for did in unique_doc_ids:
+            if did:
+                stub_cache[did] = self.storage.get_stub(did) or {}
+
+        # Only check queue status if the processor has pending/processing tasks
+        has_active_tasks = bool(self.processor.queue._tasks)
+
+        results = []
         for r in raw_results:
             doc_id = r.get("doc_id", "")
-
-            # Fetch document-level info
-            if doc_id not in stub_cache:
-                stub = self.storage.get_stub(doc_id)
-                stub_cache[doc_id] = stub or {}
-
-            stub = stub_cache[doc_id]
-
-            # Check processing status and boost priority if needed
+            stub = stub_cache.get(doc_id, {})
             instructions = stub.get("instruction", "")
-            status_info = self.processor.queue.get_status(doc_id)
 
-            if status_info and status_info.get("status") in ("pending", "processing"):
-                # Boost priority for queried documents still being processed
-                self.processor.queue.bump_priority(doc_id, delta=10)
-                self.logger.debug(
-                    f"Boosted priority for queried document {doc_id} "
-                    f"(status: {status_info['status']})"
-                )
-
-                # Add status annotation to instructions
-                status_val = status_info.get("status")
-                if status_val == "pending":
-                    instructions += "\n\n⏳ [Processing: This document is queued for embedding and will be fully searchable soon]"
-                elif status_val == "processing":
-                    instructions += "\n\n🔄 [Processing: This document is currently being indexed and will be fully available shortly]"
+            # Only check queue status if there are active tasks (fast path)
+            if has_active_tasks:
+                status_info = self.processor.queue.get_status(doc_id)
+                if status_info and status_info.get("status") in ("pending", "processing"):
+                    self.processor.queue.bump_priority(doc_id, delta=10)
+                    status_val = status_info["status"]
+                    if status_val == "pending":
+                        instructions += "\n\n⏳ [Processing: This document is queued for embedding and will be fully searchable soon]"
+                    elif status_val == "processing":
+                        instructions += "\n\n🔄 [Processing: This document is currently being indexed and will be fully available shortly]"
 
             results.append(
                 MentatResult(
@@ -485,10 +523,11 @@ class Mentat:
                 )
             )
 
-        # Adaptor hooks
-        result_dicts = [r.model_dump() for r in results]
-        for adaptor in self._adaptors:
-            result_dicts = adaptor.on_search_results(query, result_dicts)
+        # Adaptor hooks (skip serialization if no adaptors)
+        if self._adaptors:
+            result_dicts = [r.model_dump() for r in results]
+            for adaptor in self._adaptors:
+                result_dicts = adaptor.on_search_results(query, result_dicts)
 
         return results
 
@@ -536,10 +575,12 @@ class Mentat:
         return self.collections_store.list_collections()
 
     async def summarize_doc(self, doc_id: str) -> bool:
-        """Generate summaries for a document's chunks (for lazy/background summarization).
+        """Generate summaries for a document's chunks (on-demand / lazy).
 
-        This can be called after indexing to generate summaries on-demand.
-        Returns True if summaries were generated, False if doc not found or already summarized.
+        Fetches stored chunks, generates LLM summaries, then persists them
+        back via delete + re-add (LanceDB has no UPDATE).
+
+        Returns True if summaries were generated and persisted, False otherwise.
         """
         # Get stored chunks
         chunk_rows = self.storage.get_chunks_by_doc(doc_id)
@@ -566,15 +607,19 @@ class Mentat:
         self.logger.info(f"Generating summaries for {doc_id}...")
         chunk_summaries = await self.librarian.summarize_chunks(probe_result)
 
-        # Update chunks in storage
-        # LanceDB requires delete + re-add for updates
-        # TODO: This is inefficient, but LanceDB doesn't have UPDATE yet
-        # For now, we just log that summaries were generated but don't update
-        # In production, you'd want to implement chunk updates or use a DB that supports UPDATE
+        # Persist: update each chunk row with its summary, then delete+re-add
+        summary_map: Dict[int, str] = {}
+        for i, s in enumerate(chunk_summaries):
+            if i < len(probe_result.chunks):
+                summary_map[probe_result.chunks[i].index] = s
 
-        self.logger.warning(
-            f"Summaries generated for {doc_id} but not persisted (LanceDB limitation). "
-            "Consider re-indexing with --summarize flag."
+        for row in chunk_rows:
+            idx = row.get("chunk_index", 0)
+            row["summary"] = summary_map.get(idx, row.get("summary", ""))
+
+        self.storage.update_chunks(doc_id, chunk_rows)
+        self.logger.info(
+            f"Persisted {len(chunk_summaries)} summaries for {doc_id}"
         )
 
         return True

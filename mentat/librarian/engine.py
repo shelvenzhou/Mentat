@@ -68,14 +68,22 @@ class Librarian:
     # Phase 1: Per-chunk summarisation
     # ------------------------------------------------------------------
 
+    # Chunks shorter than this (in estimated tokens) are kept verbatim —
+    # an LLM summary would not meaningfully compress them.
+    SHORT_CHUNK_TOKEN_THRESHOLD = 100
+
     async def summarize_chunks(
         self, probe_result: ProbeResult
     ) -> List[str]:
         """Return a list of summaries aligned 1-to-1 with ``probe_result.chunks``.
 
-        For small files (``is_full_content``), the raw content is returned as-is
-        since it is already compact enough to serve as its own summary.
+        Bypass rules (no LLM call):
+          * Small files (``is_full_content``) — content IS the summary.
+          * Individual short chunks (< SHORT_CHUNK_TOKEN_THRESHOLD tokens) —
+            returned verbatim since a summary would not be shorter.
         """
+        from mentat.probes._utils import estimate_tokens
+
         chunks = probe_result.chunks
         if not chunks:
             return []
@@ -85,17 +93,36 @@ class Librarian:
             logger.debug(f"Skipping summarization for {probe_result.filename} (full content)")
             return [c.content for c in chunks]
 
-        # Batch chunks by count (simple and effective)
-        # Note: API processing time variance is dominated by server-side rate limiting
-        # and queue position, not batch content size, so simple batching works well.
+        # Separate short chunks (keep verbatim) from long ones (need LLM)
         summaries: List[Optional[str]] = [None] * len(chunks)
+        long_chunks = []
+        short_count = 0
+        for i, chunk in enumerate(chunks):
+            if estimate_tokens(chunk.content) < self.SHORT_CHUNK_TOKEN_THRESHOLD:
+                summaries[i] = chunk.content
+                short_count += 1
+            else:
+                long_chunks.append((i, chunk))
+
+        if short_count:
+            logger.debug(
+                f"Skipping summarization for {short_count}/{len(chunks)} short chunks "
+                f"(< {self.SHORT_CHUNK_TOKEN_THRESHOLD} tokens)"
+            )
+
+        # If all chunks are short, we're done
+        if not long_chunks:
+            return summaries  # type: ignore[return-value]
+
+        # Batch the remaining long chunks
+        only_chunks = [c for _, c in long_chunks]
         batches = [
-            chunks[i : i + self.summary_batch_size]
-            for i in range(0, len(chunks), self.summary_batch_size)
+            only_chunks[i : i + self.summary_batch_size]
+            for i in range(0, len(only_chunks), self.summary_batch_size)
         ]
 
         logger.info(
-            f"Summarizing {len(chunks)} chunks in {len(batches)} batches "
+            f"Summarizing {len(only_chunks)} chunks in {len(batches)} batches "
             f"({self.summary_batch_size} chunks/batch target) for {probe_result.filename}"
         )
 
@@ -111,17 +138,19 @@ class Librarian:
             f"({batch_duration:.1f}s total, {avg_per_batch:.1f}s avg/batch)"
         )
 
-        offset = 0
+        # Map batch results back to original indices via long_chunks
+        long_offset = 0
         for batch, result in zip(batches, batch_results):
             if isinstance(result, Exception):
                 logger.warning("Chunk summary batch failed: %s", result)
-                # Fallback: use first 200 chars of raw content
-                for i, chunk in enumerate(batch):
-                    summaries[offset + i] = chunk.content[:200]
+                for j, _chunk in enumerate(batch):
+                    orig_idx = long_chunks[long_offset + j][0]
+                    summaries[orig_idx] = _chunk.content[:200]
             else:
-                for i, summary in enumerate(result):
-                    summaries[offset + i] = summary
-            offset += len(batch)
+                for j, summary in enumerate(result):
+                    orig_idx = long_chunks[long_offset + j][0]
+                    summaries[orig_idx] = summary
+            long_offset += len(batch)
 
         # Safety: fill any remaining None slots
         for i, s in enumerate(summaries):

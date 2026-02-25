@@ -167,6 +167,9 @@ class LanceDBStorage:
             doc_ids: If provided, restrict search to chunks belonging to these documents.
                      Uses LanceDB pre-filtering for efficient scoped search.
         """
+        if self.chunks_table is None:
+            return []
+
         if use_hybrid and self._has_fts_index():
             # LanceDB hybrid search: vector + FTS with reranking
             q = self.chunks_table.search(query_vector, query_type="hybrid")
@@ -215,6 +218,28 @@ class LanceDBStorage:
             return rows
         except Exception:
             return []
+
+    def update_chunks(self, doc_id: str, updated_rows: List[Dict[str, Any]]) -> None:
+        """Replace all chunks for a document (delete + re-add).
+
+        LanceDB has no row-level UPDATE, so we delete existing chunks
+        for the doc_id and re-add the updated rows.
+        """
+        if self.chunks_table is None or not updated_rows:
+            return
+
+        # Delete existing chunks for this document
+        self.chunks_table.delete(f"doc_id = '{doc_id}'")
+
+        # Strip LanceDB internal fields before re-adding
+        clean = []
+        for row in updated_rows:
+            clean.append({
+                k: v for k, v in row.items()
+                if not k.startswith("_")
+            })
+
+        self.chunks_table.add(clean)
 
     def count_docs(self) -> int:
         """Count total indexed documents."""

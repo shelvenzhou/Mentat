@@ -326,7 +326,7 @@ class TestErrorHandling:
         await temp_mentat.start()
 
         # Create a file that will cause processing issues
-        bad_file = tmp_path / "bad.txt"
+        bad_file = tmp_path / "bad.md"
         bad_file.write_text("x" * 10_000_000)  # Very large file might cause issues
 
         doc_id = await temp_mentat.add(str(bad_file), wait=False)

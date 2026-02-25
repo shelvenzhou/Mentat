@@ -6,11 +6,10 @@ immediate return from add() operations while enrichment happens asynchronously.
 """
 
 import asyncio
-import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from mentat.probes.base import Chunk, ProbeResult
 
@@ -18,6 +17,114 @@ if TYPE_CHECKING:
     from mentat.core.hub import Mentat
 
 logger = logging.getLogger("mentat.queue")
+
+
+# ── Shared chunk preparation utilities ──────────────────────────────────────
+# Used by both BackgroundProcessor (async path) and Mentat.add (inline path).
+
+# Max tokens for embedding model (text-embedding-3-*: 8191)
+# Use conservative limit since estimate_tokens() is approximate
+_MAX_EMBED_TOKENS = 6000
+_OVERLAP_CHARS = 500  # Overlap between split pieces for context continuity
+
+# Type alias for chunk mapping entries
+ChunkMapping = List[Tuple[int, int, int, int, int]]  # (chunk_idx, piece_idx, total_pieces, start_char, end_char)
+
+
+def prepare_embed_texts(
+    chunks: List[Chunk],
+) -> Tuple[List[str], ChunkMapping]:
+    """Build embedding-ready texts from probe chunks, splitting oversized ones.
+
+    Returns:
+        (embed_texts, chunk_mapping) — texts ready for embed_batch and a
+        mapping from each text back to its source chunk.
+    """
+    from mentat.probes._utils import estimate_tokens
+
+    embed_texts: List[str] = []
+    chunk_mapping: ChunkMapping = []
+
+    for i, chunk in enumerate(chunks):
+        text = chunk.content
+        section_prefix = f"[{chunk.section}] " if chunk.section else ""
+        full_text = section_prefix + text
+        estimated_tokens = estimate_tokens(full_text)
+
+        if estimated_tokens <= _MAX_EMBED_TOKENS:
+            embed_texts.append(full_text)
+            chunk_mapping.append((i, 0, 1, 0, len(text)))
+        else:
+            max_chars = int(_MAX_EMBED_TOKENS * 3)
+            pieces: List[Tuple[int, int]] = []
+            start = 0
+            while start < len(text):
+                end = min(start + max_chars, len(text))
+                pieces.append((start, end))
+                if end >= len(text):
+                    break
+                start = end - _OVERLAP_CHARS
+
+            num_pieces = len(pieces)
+            logger.debug(
+                f"Splitting chunk {i} (~{estimated_tokens} tokens, {len(text)} chars) "
+                f"into {num_pieces} pieces with {_OVERLAP_CHARS}ch overlap"
+            )
+            for piece_idx, (s, e) in enumerate(pieces):
+                piece_marker = f" [part {piece_idx + 1}/{num_pieces}]"
+                embed_texts.append(section_prefix + piece_marker + "\n" + text[s:e])
+                chunk_mapping.append((i, piece_idx, num_pieces, s, e))
+
+    return embed_texts, chunk_mapping
+
+
+def build_chunk_records(
+    doc_id: str,
+    filename: str,
+    chunks: List[Chunk],
+    vectors: List[List[float]],
+    summaries: List[str],
+    chunk_mapping: ChunkMapping,
+) -> List[Dict[str, Any]]:
+    """Build storage-ready chunk records from vectors + mapping.
+
+    Returns a list of dicts ready for ``LanceDBStorage.add_chunks``.
+    """
+    if len(vectors) != len(chunk_mapping):
+        raise ValueError(
+            f"Mismatched lengths: vectors={len(vectors)}, "
+            f"chunk_mapping={len(chunk_mapping)}"
+        )
+
+    records: List[Dict[str, Any]] = []
+    for vector, (chunk_idx, piece_idx, total_pieces, start_char, end_char) in zip(
+        vectors, chunk_mapping
+    ):
+        chunk = chunks[chunk_idx]
+        summary = summaries[chunk_idx] if chunk_idx < len(summaries) else ""
+
+        if total_pieces == 1:
+            content = chunk.content
+            chunk_id = f"{doc_id}_{chunk.index}"
+        else:
+            content = chunk.content[start_char:end_char]
+            chunk_id = f"{doc_id}_{chunk.index}_p{piece_idx}"
+
+        records.append({
+            "chunk_id": chunk_id,
+            "doc_id": doc_id,
+            "filename": filename,
+            "content": content,
+            "summary": summary,
+            "section": chunk.section or "",
+            "chunk_index": chunk.index,
+            "vector": vector,
+            "is_split": total_pieces > 1,
+            "piece_index": piece_idx if total_pieces > 1 else None,
+            "total_pieces": total_pieces if total_pieces > 1 else None,
+        })
+
+    return records
 
 
 @dataclass
@@ -46,27 +153,28 @@ class ProcessingTask:
 class ProcessingQueue:
     """In-memory priority queue for processing tasks.
 
-    Manages a priority queue of documents awaiting embedding and summarization.
-    Tracks task status in memory (lost on restart).
+    Uses a heap list + asyncio.Event so that ``bump_priority`` actually
+    affects ordering.  ``get_next`` always picks the highest-priority
+    pending task (re-sorted after each bump).
     """
 
     def __init__(self):
-        self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
+        import heapq
+        self._heap: List = []              # min-heap of (-priority, submit_order, doc_id)
+        self._counter: int = 0             # tie-breaker for equal priorities (FIFO)
         self._tasks: Dict[str, ProcessingTask] = {}
         self._lock = asyncio.Lock()
+        self._event = asyncio.Event()      # signalled when work is available
 
     async def submit(self, task: ProcessingTask) -> None:
         """Submit a task to the processing queue.
 
-        Args:
-            task: ProcessingTask to queue
-
-        Note:
-            If a task with the same doc_id already exists and is pending/processing,
-            the submission is skipped to prevent duplicate processing.
+        If a task with the same doc_id already exists and is pending/processing,
+        the submission is skipped to prevent duplicate processing.
         """
+        import heapq
+
         async with self._lock:
-            # Prevent duplicate submissions
             if task.doc_id in self._tasks:
                 existing = self._tasks[task.doc_id]
                 if existing.status in ("pending", "processing"):
@@ -77,23 +185,16 @@ class ProcessingQueue:
                     return
 
             self._tasks[task.doc_id] = task
-            # Negative priority for max-heap behavior (higher priority = processed first)
-            await self._queue.put((-task.priority, task.doc_id))
+            heapq.heappush(self._heap, (-task.priority, self._counter, task.doc_id))
+            self._counter += 1
             logger.debug(
                 f"Submitted task {task.doc_id} with priority {task.priority} "
                 f"(summarize={task.needs_summarization})"
             )
+        self._event.set()
 
     def get_status(self, doc_id: str) -> Optional[Dict[str, Any]]:
-        """Get current status of a processing task.
-
-        Args:
-            doc_id: Document identifier
-
-        Returns:
-            Status dict with keys: status, submitted_at, error (if failed)
-            Returns None if doc_id not found in queue.
-        """
+        """Get current status of a processing task."""
         task = self._tasks.get(doc_id)
         if not task:
             return None
@@ -107,33 +208,29 @@ class ProcessingQueue:
         }
 
     def bump_priority(self, doc_id: str, delta: int = 10) -> None:
-        """Increase priority for a queued document.
-
-        Useful for prioritizing documents that are queried before processing
-        completes.
+        """Increase priority for a queued document and re-sort the heap.
 
         Args:
             doc_id: Document identifier
             delta: Priority increase amount (default: 10)
-
-        Note:
-            Priority change only affects future queue ordering. Tasks already
-            pulled from the queue are unaffected.
         """
+        import heapq
+
         task = self._tasks.get(doc_id)
-        if task and task.status == "pending":
-            task.priority += delta
-            logger.debug(f"Bumped priority for {doc_id} to {task.priority}")
+        if not task or task.status != "pending":
+            return
+
+        task.priority += delta
+
+        # Rebuild heap entries for this doc_id with updated priority.
+        # We add a new entry with the bumped priority; stale entries are
+        # skipped in get_next() when the task is no longer pending.
+        heapq.heappush(self._heap, (-task.priority, self._counter, doc_id))
+        self._counter += 1
+        logger.debug(f"Bumped priority for {doc_id} to {task.priority}")
 
     def cleanup_completed(self, max_age_hours: float = 24) -> int:
-        """Remove completed/failed tasks older than max_age.
-
-        Args:
-            max_age_hours: Maximum age in hours for completed tasks
-
-        Returns:
-            Number of tasks removed
-        """
+        """Remove completed/failed tasks older than max_age."""
         cutoff = time.time() - (max_age_hours * 3600)
 
         to_remove = [
@@ -151,15 +248,36 @@ class ProcessingQueue:
         return len(to_remove)
 
     async def get_next(self) -> Optional[str]:
-        """Get next task from queue (blocking).
+        """Get next pending task from the heap.
 
-        Returns:
-            doc_id of next task, or None if queue is empty after timeout
+        Skips stale entries (tasks already processing/completed/failed).
+        Returns None if nothing is available after a 1-second wait.
         """
+        import heapq
+
+        # Try to pop from heap first (no wait needed if work is ready)
+        async with self._lock:
+            while self._heap:
+                neg_prio, _order, doc_id = heapq.heappop(self._heap)
+                task = self._tasks.get(doc_id)
+                if task and task.status == "pending":
+                    return doc_id
+                # Stale entry — skip and continue
+
+        # Heap was empty — wait for a submit signal (with timeout for cleanup)
+        self._event.clear()
         try:
-            _, doc_id = await asyncio.wait_for(self._queue.get(), timeout=1.0)
-            return doc_id
+            await asyncio.wait_for(self._event.wait(), timeout=1.0)
         except asyncio.TimeoutError:
+            return None
+
+        # Re-check after wakeup
+        async with self._lock:
+            while self._heap:
+                neg_prio, _order, doc_id = heapq.heappop(self._heap)
+                task = self._tasks.get(doc_id)
+                if task and task.status == "pending":
+                    return doc_id
             return None
 
 
@@ -310,60 +428,11 @@ class BackgroundProcessor:
         Returns:
             List of embedding vectors (may be more than original chunks if splitting occurred)
         """
-        from mentat.probes._utils import estimate_tokens
-
         chunks = task.probe_result.chunks
-
         if not chunks:
             return []
 
-        # Max tokens for embedding model (text-embedding-3-small: 8191)
-        # Use very conservative limit since estimate_tokens() is approximate
-        MAX_EMBED_TOKENS = 6000
-        OVERLAP_CHARS = 500  # Overlap between split pieces for context continuity
-
-        # Track mapping from embed pieces back to original chunks
-        embed_texts = []
-        chunk_mapping = []  # List of (chunk_index, piece_index, total_pieces, start_char, end_char)
-
-        for i, chunk in enumerate(chunks):
-            text = chunk.content
-            section_prefix = f"[{chunk.section}] " if chunk.section else ""
-
-            # Check if chunk needs splitting
-            full_text = section_prefix + text
-            estimated_tokens = estimate_tokens(full_text)
-
-            if estimated_tokens <= MAX_EMBED_TOKENS:
-                # Chunk fits - embed as-is
-                embed_texts.append(full_text)
-                chunk_mapping.append((i, 0, 1, 0, len(text)))
-            else:
-                # Chunk too large - split into overlapping pieces
-                max_chars = int(MAX_EMBED_TOKENS * 3.5)
-                pieces = []
-                start = 0
-
-                while start < len(text):
-                    end = min(start + max_chars, len(text))
-                    pieces.append((start, end))
-                    if end >= len(text):
-                        break
-                    start = end - OVERLAP_CHARS  # Overlap for context
-
-                num_pieces = len(pieces)
-                logger.debug(
-                    f"Splitting chunk {i} (~{estimated_tokens} tokens, {len(text)} chars) "
-                    f"into {num_pieces} pieces with {OVERLAP_CHARS}ch overlap"
-                )
-
-                for piece_idx, (start, end) in enumerate(pieces):
-                    piece_text = text[start:end]
-                    piece_marker = f" [part {piece_idx + 1}/{num_pieces}]"
-                    embed_text = section_prefix + piece_marker + "\n" + piece_text
-
-                    embed_texts.append(embed_text)
-                    chunk_mapping.append((i, piece_idx, num_pieces, start, end))
+        embed_texts, chunk_mapping = prepare_embed_texts(chunks)
 
         logger.debug(
             f"Embedding {len(embed_texts)} pieces from {len(chunks)} semantic chunks for {task.doc_id}"
@@ -402,92 +471,25 @@ class BackgroundProcessor:
     async def _store_chunks(
         self, task: ProcessingTask, vectors: List[List[float]], summaries: List[str]
     ) -> None:
-        """Store chunks with vectors and summaries in the database.
-
-        Handles split chunks: if a semantic chunk was split into multiple pieces
-        for embedding, each piece is stored as a separate searchable chunk with
-        metadata indicating it's part of a larger whole.
-
-        Args:
-            task: ProcessingTask being processed
-            vectors: List of embedding vectors (may be > len(chunks) if splitting occurred)
-            summaries: List of chunk summaries (one per original semantic chunk)
-        """
+        """Store chunks with vectors and summaries in the database."""
         chunks = task.probe_result.chunks
         doc_id = task.doc_id
         filename = task.probe_result.filename or "unknown"
-
-        # Check if we have chunk mapping (from split chunks)
         chunk_mapping = getattr(task, 'chunk_mapping', None)
 
-        if chunk_mapping:
-            # We have split chunks - use mapping to build records
-            if len(vectors) != len(chunk_mapping):
-                raise ValueError(
-                    f"Mismatched lengths: vectors={len(vectors)}, "
-                    f"chunk_mapping={len(chunk_mapping)}"
-                )
+        if not chunk_mapping:
+            # Fallback: build identity mapping (no splits)
+            chunk_mapping = [(i, 0, 1, 0, len(c.content)) for i, c in enumerate(chunks)]
 
-            chunk_records = []
-            for vector, (chunk_idx, piece_idx, total_pieces, start_char, end_char) in zip(
-                vectors, chunk_mapping
-            ):
-                chunk = chunks[chunk_idx]
-                summary = summaries[chunk_idx] if chunk_idx < len(summaries) else ""
+        chunk_records = build_chunk_records(
+            doc_id, filename, chunks, vectors, summaries, chunk_mapping
+        )
 
-                # Extract the piece content
-                if total_pieces == 1:
-                    # Not split
-                    content = chunk.content
-                    chunk_id = f"{doc_id}_{chunk.index}"
-                else:
-                    # Split piece
-                    content = chunk.content[start_char:end_char]
-                    chunk_id = f"{doc_id}_{chunk.index}_p{piece_idx}"
+        logger.debug(
+            f"Storing {len(chunk_records)} chunks "
+            f"(from {len(chunks)} semantic chunks) for {doc_id}"
+        )
 
-                chunk_records.append({
-                    "chunk_id": chunk_id,
-                    "doc_id": doc_id,
-                    "filename": filename,
-                    "content": content,
-                    "summary": summary,  # Same summary for all pieces
-                    "section": chunk.section or "",
-                    "chunk_index": chunk.index,
-                    "vector": vector,
-                    # Metadata for split pieces
-                    "is_split": total_pieces > 1,
-                    "piece_index": piece_idx if total_pieces > 1 else None,
-                    "total_pieces": total_pieces if total_pieces > 1 else None,
-                })
-
-            logger.debug(
-                f"Stored {len(chunk_records)} searchable chunks "
-                f"(from {len(chunks)} semantic chunks) for {doc_id}"
-            )
-        else:
-            # No splitting - original behavior
-            if len(vectors) != len(chunks) or len(summaries) != len(chunks):
-                raise ValueError(
-                    f"Mismatched lengths: chunks={len(chunks)}, "
-                    f"vectors={len(vectors)}, summaries={len(summaries)}"
-                )
-
-            chunk_records = []
-            for chunk, summary, vector in zip(chunks, summaries, vectors):
-                chunk_records.append({
-                    "chunk_id": f"{doc_id}_{chunk.index}",
-                    "doc_id": doc_id,
-                    "filename": filename,
-                    "content": chunk.content,
-                    "summary": summary,
-                    "section": chunk.section or "",
-                    "chunk_index": chunk.index,
-                    "vector": vector,
-                })
-
-            logger.debug(f"Stored {len(chunk_records)} chunks for {doc_id}")
-
-        # Store in database (this ensures chunks table is created with proper vector dim)
         vector_dim = len(vectors[0]) if vectors else 0
         self.mentat.storage._ensure_chunks_table(vector_dim)
         self.mentat.storage.add_chunks(chunk_records)

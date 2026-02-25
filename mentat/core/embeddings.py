@@ -48,68 +48,51 @@ class LiteLLMEmbedding(BaseEmbedding):
         response = await litellm.aembedding(**kwargs)
         return response.data[0]["embedding"]
 
-    async def embed_batch(self, texts: List[str], max_tokens_per_batch: int = 6000) -> List[List[float]]:
-        """Embed texts in batches that respect the model's context window.
+    # Per-text token limit (OpenAI text-embedding-3-*: 8191 tokens max per input)
+    # Conservative to account for estimation error in _estimate_tokens()
+    MAX_TOKENS_PER_TEXT = 6000
 
-        Args:
-            texts: List of texts to embed
-            max_tokens_per_batch: Maximum tokens per API call (default 6000 to leave headroom)
+    # Max texts per API call.  OpenAI allows 2048; we use a smaller default
+    # to keep individual request payloads manageable and allow concurrency.
+    MAX_TEXTS_PER_BATCH = 100
+
+    async def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Embed texts in batches that respect the model's limits.
+
+        Batching strategy:
+          * Each individual text is truncated to MAX_TOKENS_PER_TEXT if needed.
+          * Texts are grouped into batches of up to MAX_TEXTS_PER_BATCH.
+          * All batches are sent concurrently.
 
         Returns:
             List of embeddings in same order as input texts
         """
-        if not texts:
-            return []
-
-        # Single text or small batch - send as-is
-        if len(texts) == 1:
-            kwargs = {"model": self.model, "input": texts}
-            if self.api_key:
-                kwargs["api_key"] = self.api_key
-            if self.api_base:
-                kwargs["api_base"] = self.api_base
-            response = await litellm.aembedding(**kwargs)
-            return [response.data[0]["embedding"]]
-
-        # Batch texts to respect context window
-        batches = []
-        current_batch = []
-        current_tokens = 0
-
-        for i, text in enumerate(texts):
-            text_tokens = _estimate_tokens(text)
-
-            # If a single text is too large, warn and truncate it
-            if text_tokens > max_tokens_per_batch:
-                import logging
-                logger = logging.getLogger(__name__)
-                # Truncate to fit (rough approximation: chars = tokens * 4)
-                max_chars = int(max_tokens_per_batch * 4)
-                original_len = len(text)
-                text = text[:max_chars]
-                text_tokens = max_tokens_per_batch - 100  # Leave some headroom
-                logger.warning(
-                    f"Text {i} too large ({original_len} chars, est. {_estimate_tokens(texts[i])} tokens), "
-                    f"truncated to {max_chars} chars"
-                )
-
-            # If adding this text would exceed limit, start new batch
-            if current_batch and current_tokens + text_tokens > max_tokens_per_batch:
-                batches.append(current_batch)
-                current_batch = [text]
-                current_tokens = text_tokens
-            else:
-                current_batch.append(text)
-                current_tokens += text_tokens
-
-        # Add final batch
-        if current_batch:
-            batches.append(current_batch)
-
-        # Process batches concurrently
         import asyncio
         import logging
         logger = logging.getLogger(__name__)
+
+        if not texts:
+            return []
+
+        # Truncate oversized individual texts
+        processed: List[str] = []
+        for i, text in enumerate(texts):
+            text_tokens = _estimate_tokens(text)
+            if text_tokens > self.MAX_TOKENS_PER_TEXT:
+                max_chars = int(self.MAX_TOKENS_PER_TEXT * 3)
+                logger.warning(
+                    f"Text {i} too large (est. {text_tokens} tokens), "
+                    f"truncated to ~{self.MAX_TOKENS_PER_TEXT} tokens"
+                )
+                processed.append(text[:max_chars])
+            else:
+                processed.append(text)
+
+        # Build batches by count
+        batches = [
+            processed[i : i + self.MAX_TEXTS_PER_BATCH]
+            for i in range(0, len(processed), self.MAX_TEXTS_PER_BATCH)
+        ]
 
         async def _embed_one_batch(batch_texts: List[str], batch_idx: int) -> List[List[float]]:
             batch_tokens = sum(_estimate_tokens(t) for t in batch_texts)

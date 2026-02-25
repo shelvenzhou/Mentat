@@ -145,8 +145,8 @@ class TestMemoryUsage:
         # Create many small files
         files = []
         for i in range(50):
-            file_path = tmp_path / f"small_{i}.txt"
-            file_path.write_text(f"Document {i}")
+            file_path = tmp_path / f"small_{i}.md"
+            file_path.write_text(f"# Document {i}\n\nContent.")
             files.append(str(file_path))
 
         # Submit all
