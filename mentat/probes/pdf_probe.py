@@ -170,6 +170,29 @@ class PDFProbe(BaseProbe):
                     return text[:500]
         return ""
 
+    def _add_previews(self, doc, toc_entries: List[TocEntry]) -> None:
+        """Populate preview (first sentence after heading) for each ToC entry."""
+        for entry in toc_entries:
+            if not entry.page or entry.preview:
+                continue
+            page_idx = entry.page - 1
+            if page_idx < 0 or page_idx >= doc.page_count:
+                continue
+            page_text = doc.load_page(page_idx).get_text("text")
+            # Find the title text on its page
+            title_pos = page_text.find(entry.title)
+            if title_pos < 0:
+                continue
+            after = page_text[title_pos + len(entry.title) :].strip()
+            if not after:
+                continue
+            # First sentence (up to '. ' or first 200 chars)
+            m = re.search(r"[.!?]\s", after[:300])
+            if m:
+                entry.preview = after[: m.end()].strip()
+            elif len(after) > 20:
+                entry.preview = after[:200].strip()
+
     def _build_chunks(self, doc, toc_entries: List[TocEntry]) -> List[Chunk]:
         """Build format-aware chunks: one chunk per page, tagged with the current section."""
         chunks = []
@@ -221,6 +244,9 @@ class PDFProbe(BaseProbe):
                 )
         else:
             final_toc_entries = vis_toc
+
+        # Add previews to ToC entries
+        self._add_previews(doc, final_toc_entries)
 
         # Extract first paragraph for topic
         first_para = self._extract_first_paragraph(doc)

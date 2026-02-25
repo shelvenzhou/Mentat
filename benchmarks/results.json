@@ -1,0 +1,471 @@
+{
+  "timestamp": "2026-02-25T14:04:07.757456",
+  "config": {
+    "paper": "benchmarks/1706.03762v7.pdf",
+    "embedding_model": "openai/openai/text-embedding-3-large",
+    "chat_model": "openai/gpt-4o-mini",
+    "top_k": 5
+  },
+  "experiments": {
+    "trivial_rag": {
+      "mentat": {
+        "indexing": {
+          "wall_time": 1.8698984142392874,
+          "embedding_tokens": 10236,
+          "llm_prompt_tokens": 0,
+          "llm_completion_tokens": 0
+        },
+        "totals": {
+          "embedding_tokens": 10295,
+          "llm_tokens": 12048,
+          "time": 8.452632677741349
+        },
+        "questions": [
+          {
+            "id": "T1",
+            "query": "What BLEU score did the Transformer (big) model achieve on the WMT 2014 English-to-German translation task?",
+            "answer": "The Transformer (big) model achieved a BLEU score of 28.4 on the WMT 2014 English-to-German translation task.",
+            "context_tokens_est": 3143,
+            "retrieval": {
+              "embedding_tokens": 26,
+              "llm_tokens": 0,
+              "wall_time": 0.26080070715397596
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 4180,
+              "llm_completion_tokens": 30,
+              "wall_time": 1.0924002910032868
+            }
+          },
+          {
+            "id": "T2",
+            "query": "How many attention heads does the base Transformer model use, and what are the key and value dimensions?",
+            "answer": "The base Transformer model uses **h = 8** parallel attention heads. The key and value dimensions are both **dk = dv = dmodel/h = 64**.",
+            "context_tokens_est": 3110,
+            "retrieval": {
+              "embedding_tokens": 20,
+              "llm_tokens": 0,
+              "wall_time": 0.24449405260384083
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 3424,
+              "llm_completion_tokens": 35,
+              "wall_time": 1.5538382632657886
+            }
+          },
+          {
+            "id": "T3",
+            "query": "What optimizer and learning rate schedule was used to train the Transformer?",
+            "answer": "The optimizer used to train the Transformer was the Adam optimizer with parameters β1 = 0.9, β2 = 0.98, and ϵ = 10−9. The learning rate schedule varied over the course of training according to the formula:\n\nlrate = d−0.5 * model * min(step_num−0.5, step_num * warmup_steps−1.5)\n\nThe learning rate was increased linearly for the first 4000 training steps (warmup_steps) and decreased thereafter proportionally to the inverse square root of the step number.",
+            "context_tokens_est": 3308,
+            "retrieval": {
+              "embedding_tokens": 13,
+              "llm_tokens": 0,
+              "wall_time": 0.41512930765748024
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 4260,
+              "llm_completion_tokens": 119,
+              "wall_time": 3.016071641817689
+            }
+          }
+        ]
+      },
+      "lancedb": {
+        "indexing": {
+          "wall_time": 1.931185070425272,
+          "embedding_tokens": 12693,
+          "llm_prompt_tokens": 0,
+          "llm_completion_tokens": 0
+        },
+        "totals": {
+          "embedding_tokens": 12752,
+          "llm_tokens": 4325,
+          "time": 8.42354828119278
+        },
+        "questions": [
+          {
+            "id": "T1",
+            "query": "What BLEU score did the Transformer (big) model achieve on the WMT 2014 English-to-German translation task?",
+            "answer": "The Transformer (big) model achieved a BLEU score of 28.4 on the WMT 2014 English-to-German translation task.",
+            "context_tokens_est": 1038,
+            "retrieval": {
+              "embedding_tokens": 26,
+              "llm_tokens": 0,
+              "wall_time": 0.385239246301353
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 1332,
+              "llm_completion_tokens": 30,
+              "wall_time": 1.227380806580186
+            }
+          },
+          {
+            "id": "T2",
+            "query": "How many attention heads does the base Transformer model use, and what are the key and value dimensions?",
+            "answer": "The base Transformer model uses 8 attention heads. The key and value dimensions are both 64.",
+            "context_tokens_est": 1107,
+            "retrieval": {
+              "embedding_tokens": 20,
+              "llm_tokens": 0,
+              "wall_time": 0.2795966034755111
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 1262,
+              "llm_completion_tokens": 20,
+              "wall_time": 1.1448671407997608
+            }
+          },
+          {
+            "id": "T3",
+            "query": "What optimizer and learning rate schedule was used to train the Transformer?",
+            "answer": "The optimizer used to train the Transformer was the Adam optimizer with parameters β1 = 0.9, β2 = 0.98, and ϵ = 10−9. The learning rate schedule varied according to the formula:\n\nlrate = d−0.5 model · min(step_num−0.5, step_num · warmup_steps−1.5)\n\nThis schedule involved increasing the learning rate linearly for the first 4000 warmup_steps and then decreasing it proportionally to the inverse square root of the step number.",
+            "context_tokens_est": 1116,
+            "retrieval": {
+              "embedding_tokens": 13,
+              "llm_tokens": 0,
+              "wall_time": 0.3433362478390336
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 1569,
+              "llm_completion_tokens": 112,
+              "wall_time": 3.111943165771663
+            }
+          }
+        ]
+      },
+      "naive": {
+        "indexing": {
+          "wall_time": 0.1455398378893733,
+          "embedding_tokens": 0,
+          "llm_prompt_tokens": 0,
+          "llm_completion_tokens": 0
+        },
+        "totals": {
+          "embedding_tokens": 0,
+          "llm_tokens": 30797,
+          "time": 10.207635411061347
+        },
+        "questions": [
+          {
+            "id": "T1",
+            "query": "What BLEU score did the Transformer (big) model achieve on the WMT 2014 English-to-German translation task?",
+            "answer": "The Transformer (big) model achieved a BLEU score of 28.4 on the WMT 2014 English-to-German translation task.",
+            "context_tokens_est": 7927,
+            "retrieval": {
+              "embedding_tokens": 0,
+              "llm_tokens": 0,
+              "wall_time": 0.0
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 10216,
+              "llm_completion_tokens": 30,
+              "wall_time": 3.1558646177873015
+            }
+          },
+          {
+            "id": "T2",
+            "query": "How many attention heads does the base Transformer model use, and what are the key and value dimensions?",
+            "answer": "The base Transformer model uses 8 attention heads. The key and value dimensions are both 64.",
+            "context_tokens_est": 7927,
+            "retrieval": {
+              "embedding_tokens": 0,
+              "llm_tokens": 0,
+              "wall_time": 0.0
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 10210,
+              "llm_completion_tokens": 20,
+              "wall_time": 3.095736891962588
+            }
+          },
+          {
+            "id": "T3",
+            "query": "What optimizer and learning rate schedule was used to train the Transformer?",
+            "answer": "The optimizer used to train the Transformer was the Adam optimizer with parameters β1 = 0.9, β2 = 0.98, and ϵ = 10−9. The learning rate schedule varied over the course of training according to the formula:\n\nlrate = d−0.5 * min(step_num−0.5, step_num * warmup_steps−1.5)\n\nThis means the learning rate increased linearly for the first 4000 training steps (warmup_steps) and decreased thereafter proportionally to the inverse square root of the step number.",
+            "context_tokens_est": 7927,
+            "retrieval": {
+              "embedding_tokens": 0,
+              "llm_tokens": 0,
+              "wall_time": 0.0
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 10203,
+              "llm_completion_tokens": 118,
+              "wall_time": 3.810494063422084
+            }
+          }
+        ]
+      }
+    },
+    "summary": {
+      "mentat-toc": {
+        "indexing": {
+          "wall_time": 1.7393743237480521,
+          "embedding_tokens": 10236,
+          "llm_prompt_tokens": 0,
+          "llm_completion_tokens": 0
+        },
+        "totals": {
+          "embedding_tokens": 10236,
+          "llm_tokens": 1539,
+          "time": 9.369154380634427
+        },
+        "questions": [
+          {
+            "id": "S1",
+            "query": "Provide a comprehensive summary of this paper covering: (1) the key innovation, (2) the model architecture, (3) training setup, and (4) main experimental results.",
+            "answer": "(1) **Key Innovation**: The key innovation of the paper \"Attention Is All You Need\" is the introduction of the Transformer model, which is a sequence transduction model that relies solely on attention mechanisms, eliminating the need for recurrence and convolution entirely. This approach allows for more efficient parallelization and improved performance in tasks such as machine translation.\n\n(2) **Model Architecture**: The Transformer model consists of an encoder-decoder structure with a stack of N = 6 identical layers for the encoder. It employs multi-head attention mechanisms, where attention functions map queries to key-value pairs. The model also includes position-wise feed-forward networks applied to each position separately, learned embeddings for input and output tokens, and positional encoding to incorporate information about the order of tokens in the sequence.\n\n(3) **Training Setup**: The training was conducted on the WMT 2014 English-German dataset, which contains approximately 4.5 million sentence pairs. The models were trained on a machine equipped with 8 NVIDIA P100 GPUs. The Adam optimizer was used with parameters β1 = 0.9, β2 = 0.98, and ϵ = 10−9. Additionally, three types of regularization were employed during training.\n\n(4) **Main Experimental Results**: The Transformer model achieved a new state-of-the-art BLEU score of 28.4 on the WMT 2014 English-to-German translation task, outperforming the best previously reported models (including ensembles) by more than 2.0 BLEU points. This demonstrates the effectiveness of the Transformer architecture in machine translation tasks.",
+            "context_tokens_est": 924,
+            "retrieval": {
+              "embedding_tokens": 0,
+              "llm_tokens": 0,
+              "wall_time": 0.0
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 1210,
+              "llm_completion_tokens": 329,
+              "wall_time": 7.629780056886375
+            }
+          }
+        ]
+      },
+      "mentat-summaries": {
+        "indexing": {
+          "wall_time": 17.303072534501553,
+          "embedding_tokens": 10236,
+          "llm_prompt_tokens": 11038,
+          "llm_completion_tokens": 963
+        },
+        "totals": {
+          "embedding_tokens": 10236,
+          "llm_tokens": 14230,
+          "time": 23.920853433199227
+        },
+        "questions": [
+          {
+            "id": "S1",
+            "query": "Provide a comprehensive summary of this paper covering: (1) the key innovation, (2) the model architecture, (3) training setup, and (4) main experimental results.",
+            "answer": "(1) **Key Innovation**: The paper introduces the Transformer architecture, which is a novel sequence transduction model that relies entirely on attention mechanisms, eliminating the need for recurrent and convolutional networks. This approach enhances efficiency and performance in tasks such as machine translation.\n\n(2) **Model Architecture**: The Transformer consists of an encoder-decoder structure with a stack of N = 6 identical layers for the encoder. It employs multi-head attention mechanisms, allowing the model to focus on different representation subspaces simultaneously. Each layer includes a position-wise feed-forward network and utilizes residual connections and layer normalization to improve learning stability.\n\n(3) **Training Setup**: The models were trained on the WMT 2014 English-German dataset, which contains approximately 4.5 million sentence pairs. The training was conducted on a machine equipped with 8 NVIDIA P100 GPUs, using the Adam optimizer with parameters β1 = 0.9, β2 = 0.98, and ϵ = 10−9. The training regime included three types of regularization to enhance model performance.\n\n(4) **Main Experimental Results**: The Transformer achieved a state-of-the-art BLEU score of 28.4 on the WMT 2014 English-to-German translation task, outperforming the best previously reported models by more than 2.0 BLEU. Additionally, it achieved a BLEU score of 41.8 for English-to-French translation, demonstrating its superior performance and efficiency compared to existing models.",
+            "context_tokens_est": 1589,
+            "retrieval": {
+              "embedding_tokens": 0,
+              "llm_tokens": 0,
+              "wall_time": 0.0
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 1921,
+              "llm_completion_tokens": 308,
+              "wall_time": 6.617780898697674
+            }
+          }
+        ]
+      },
+      "lancedb": {
+        "indexing": {
+          "wall_time": 1.5098216701298952,
+          "embedding_tokens": 12693,
+          "llm_prompt_tokens": 0,
+          "llm_completion_tokens": 0
+        },
+        "totals": {
+          "embedding_tokens": 12730,
+          "llm_tokens": 1924,
+          "time": 9.4707324039191
+        },
+        "questions": [
+          {
+            "id": "S1",
+            "query": "Provide a comprehensive summary of this paper covering: (1) the key innovation, (2) the model architecture, (3) training setup, and (4) main experimental results.",
+            "answer": "(1) **Key Innovation**: The paper introduces the Transformer model, a new network architecture that relies solely on attention mechanisms, eliminating the need for recurrence and convolutions, which are common in previous sequence transduction models.\n\n(2) **Model Architecture**: The Transformer consists of an encoder and a decoder, each made up of a stack of N = 6 identical layers. The encoder has two sub-layers: a multi-head self-attention mechanism and a position-wise fully connected feed-forward network, with a residual connection and layer normalization applied. The output dimension for all sub-layers is d_model = 512. The decoder also has N = 6 layers, incorporating the same two sub-layers as the encoder, plus an additional sub-layer for attention over the encoder's output.\n\n(3) **Training Setup**: The model was trained using a dropout rate of P_drop = 0.1 for the big model, with a maximum output length set to input length + 50. Early termination was applied when possible. The training involved averaging the last 20 checkpoints for the big models and the last 5 checkpoints for the base models, with beam search using a beam size of 4 and a length penalty α = 0.6.\n\n(4) **Main Experimental Results**: The big Transformer model achieved a BLEU score of 41.0 on the English-to-French translation task, outperforming all previously published single models while costing less than 1/4 of the training cost of the previous state-of-the-art model. The results were summarized in tables comparing translation quality and training costs to other architectures, with the big model showing significant improvements in performance metrics.",
+            "context_tokens_est": 1028,
+            "retrieval": {
+              "embedding_tokens": 37,
+              "llm_tokens": 0,
+              "wall_time": 0.23301759641617537
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 1583,
+              "llm_completion_tokens": 341,
+              "wall_time": 7.72789313737303
+            }
+          }
+        ]
+      },
+      "naive": {
+        "indexing": {
+          "wall_time": 0.13794221729040146,
+          "embedding_tokens": 0,
+          "llm_prompt_tokens": 0,
+          "llm_completion_tokens": 0
+        },
+        "totals": {
+          "embedding_tokens": 0,
+          "llm_tokens": 10638,
+          "time": 9.320527500472963
+        },
+        "questions": [
+          {
+            "id": "S1",
+            "query": "Provide a comprehensive summary of this paper covering: (1) the key innovation, (2) the model architecture, (3) training setup, and (4) main experimental results.",
+            "answer": "(1) **Key Innovation**: The paper introduces the Transformer, a novel network architecture for sequence transduction that relies entirely on attention mechanisms, eliminating the need for recurrence and convolutions. This approach allows for significantly improved parallelization and faster training times compared to traditional models.\n\n(2) **Model Architecture**: The Transformer consists of an encoder-decoder structure with both components comprising six identical layers. Each encoder layer includes a multi-head self-attention mechanism and a position-wise fully connected feed-forward network, with residual connections and layer normalization applied. The decoder has an additional layer for multi-head attention over the encoder's output. The model uses a dimensionality of 512 for the embeddings and attention outputs, with 8 parallel attention heads, and employs a feed-forward network with an inner layer size of 2048.\n\n(3) **Training Setup**: The models were trained on the WMT 2014 English-German dataset (approximately 4.5 million sentence pairs) and the larger WMT 2014 English-French dataset (36 million sentences). Training utilized 8 NVIDIA P100 GPUs, with the base model trained for 100,000 steps (12 hours) and the big model for 300,000 steps (3.5 days). The Adam optimizer was used with a learning rate schedule that included warmup steps. Regularization techniques such as dropout and label smoothing were also applied.\n\n(4) **Main Experimental Results**: The Transformer achieved a BLEU score of 28.4 on the WMT 2014 English-to-German translation task, surpassing the previous best results by over 2 BLEU points. For the English-to-French task, it established a new state-of-the-art BLEU score of 41.8. The training costs were significantly lower than those of previous models, with the big model achieving these results in less than a quarter of the training time compared to the best existing models. The Transformer also demonstrated strong generalization capabilities, successfully applying the architecture to English constituency parsing tasks.",
+            "context_tokens_est": 7927,
+            "retrieval": {
+              "embedding_tokens": 0,
+              "llm_tokens": 0,
+              "wall_time": 0.0
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 10227,
+              "llm_completion_tokens": 411,
+              "wall_time": 9.182585283182561
+            }
+          }
+        ]
+      }
+    },
+    "agentic": {
+      "mentat": {
+        "indexing": {
+          "wall_time": 14.242518899962306,
+          "embedding_tokens": 10236,
+          "llm_prompt_tokens": 11038,
+          "llm_completion_tokens": 787
+        },
+        "totals": {
+          "embedding_tokens": 10316,
+          "llm_tokens": 23702,
+          "time": 37.52823992352933
+        },
+        "questions": [
+          {
+            "id": "A1",
+            "query": "Explain all three types of attention used in the Transformer model. Then compare the computational complexity of self-attention versus recurrent and convolutional layers. Finally, describe the Transformer's results on English constituency parsing.",
+            "answer": "The Transformer model utilizes three types of attention mechanisms:\n\n1. **Self-Attention**: This mechanism relates different positions of a single sequence to compute a representation of that sequence. It allows the model to consider the entire input sequence when generating an output, enabling it to capture dependencies regardless of their distance in the sequence.\n\n2. **Multi-Head Attention**: This is an extension of self-attention that allows the model to jointly attend to information from different representation subspaces at different positions. It involves multiple self-attention mechanisms (heads) running in parallel, which helps the model to learn various aspects of the input.\n\n3. **Masked Multi-Head Attention**: Used in the decoder, this variant prevents positions from attending to subsequent positions. This ensures that the predictions for a given position can only depend on the known outputs at previous positions, maintaining the autoregressive property of the model.\n\n### Computational Complexity Comparison\nThe computational complexities of the different layer types are as follows:\n\n- **Self-Attention**: O(n² · d), where n is the sequence length and d is the representation dimension. It requires O(1) sequential operations and has a maximum path length of O(1).\n  \n- **Recurrent Layers**: O(n · d²), requiring O(n) sequential operations and having a maximum path length of O(n).\n\n- **Convolutional Layers**: O(k · n · d²), where k is the kernel size. It requires O(1) sequential operations and has a maximum path length of O(logk(n)).\n\nSelf-attention is more efficient than recurrent layers in terms of computational complexity and allows for greater parallelization, making it faster, especially for longer sequences.\n\n### Results on English Constituency Parsing\nThe Transformer was evaluated on English constituency parsing using a 4-layer architecture with dmodel = 1024, trained on the Wall Street Journal (WSJ) portion of the Penn Treebank, which consists of about 40,000 training sentences. In a semi-supervised setting, it also utilized larger corpora with approximately 17 million sentences. \n\nThe results showed that the Transformer achieved a WSJ 23 F1 score of 91.3 in a discriminative setting, matching the performance of other state-of-the-art models. In a semi-supervised setting, it improved to 92.7. Despite not being specifically tuned for the task, the Transformer performed competitively, outperforming many previously reported models and demonstrating its generalization capabilities beyond translation tasks.",
+            "context_tokens_est": 3421,
+            "retrieval": {
+              "embedding_tokens": 41,
+              "llm_tokens": 1137,
+              "wall_time": 1.5133763868361712
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 4129,
+              "llm_completion_tokens": 508,
+              "wall_time": 12.311699131503701
+            }
+          },
+          {
+            "id": "A2",
+            "query": "What types of regularization were used during training? How do the model variation experiments (Table 3) show the effect of the number of attention heads, model size, and dropout on translation quality?",
+            "answer": "During training, three types of regularization were employed:\n\n1. **Residual Dropout**: Dropout was applied to the output of each sub-layer before it was added to the sub-layer input and normalized. For the base model, a dropout rate of \\( P_{drop} = 0.1 \\) was used.\n\n2. **Label Smoothing**: A label smoothing value of \\( \\epsilon_{ls} = 0.1 \\) was used, which helps improve accuracy and BLEU score, even though it may hurt perplexity.\n\n3. **Other Regularization Techniques**: While not explicitly detailed in the provided context, it is mentioned that regularization is a focus during training.\n\nRegarding the model variation experiments shown in Table 3, the results indicate the following effects on translation quality:\n\n- **Number of Attention Heads**: Varying the number of attention heads showed that using a single attention head resulted in a BLEU score that was 0.9 lower than the best setting. This suggests that while having multiple heads can improve performance, there is an optimal number beyond which quality may not improve.\n\n- **Model Size**: The experiments demonstrated that larger models generally performed better. For instance, increasing the model size led to improved BLEU scores, indicating that more parameters can enhance the model's ability to learn complex patterns.\n\n- **Dropout**: The results also highlighted the importance of dropout in avoiding overfitting. The experiments showed that models with appropriate dropout rates performed better, reinforcing the need for regularization techniques in training.\n\nOverall, the experiments in Table 3 illustrate that careful tuning of the number of attention heads, model size, and dropout rates significantly impacts the translation quality of the Transformer model.",
+            "context_tokens_est": 3849,
+            "retrieval": {
+              "embedding_tokens": 39,
+              "llm_tokens": 1121,
+              "wall_time": 1.2804163480177522
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 4633,
+              "llm_completion_tokens": 349,
+              "wall_time": 8.180229157209396
+            }
+          }
+        ]
+      },
+      "lancedb": {
+        "indexing": {
+          "wall_time": 2.985827668569982,
+          "embedding_tokens": 12693,
+          "llm_prompt_tokens": 0,
+          "llm_completion_tokens": 0
+        },
+        "totals": {
+          "embedding_tokens": 12773,
+          "llm_tokens": 3301,
+          "time": 13.859038789756596
+        },
+        "questions": [
+          {
+            "id": "A1",
+            "query": "Explain all three types of attention used in the Transformer model. Then compare the computational complexity of self-attention versus recurrent and convolutional layers. Finally, describe the Transformer's results on English constituency parsing.",
+            "answer": "The Transformer model utilizes three types of attention mechanisms: \n\n1. **Self-Attention**: This mechanism relates different positions of a single sequence to compute a representation of that sequence. It allows the model to weigh the importance of different words in a sentence relative to each other, which is crucial for understanding context.\n\n2. **Recurrent Attention**: This is based on a recurrent attention mechanism rather than sequence-aligned recurrence. It has been shown to perform well on tasks like simple-language question answering and language modeling.\n\n3. **Convolutional Attention**: This type uses convolutional layers to process sequences, applying filters to capture local dependencies in the data.\n\nIn terms of computational complexity:\n- **Self-Attention** has a complexity of O(n² · d), where n is the sequence length and d is the representation dimension. It requires O(1) sequential operations and has a maximum path length of O(1).\n- **Recurrent Layers** have a complexity of O(n · d²), requiring O(n) sequential operations and having a maximum path length of O(n).\n- **Convolutional Layers** have a complexity of O(k · n · d²), where k is the kernel size, requiring O(1) sequential operations and having a maximum path length of O(logk(n)).\n\nRegarding the Transformer's results on English constituency parsing, the model was successfully applied to this task, demonstrating its ability to generalize well across different tasks, both with large and limited training data. However, specific performance metrics for English constituency parsing are not provided in the context.",
+            "context_tokens_est": 999,
+            "retrieval": {
+              "embedding_tokens": 41,
+              "llm_tokens": 0,
+              "wall_time": 0.3689835872501135
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 1197,
+              "llm_completion_tokens": 320,
+              "wall_time": 6.340948692522943
+            }
+          },
+          {
+            "id": "A2",
+            "query": "What types of regularization were used during training? How do the model variation experiments (Table 3) show the effect of the number of attention heads, model size, and dropout on translation quality?",
+            "answer": "The context does not provide specific details about the types of regularization used during training. \n\nRegarding the model variation experiments in Table 3, the results indicate the following effects on translation quality:\n\n1. **Number of Attention Heads**: In row (A), it is noted that single-head attention is 0.9 BLEU worse than the best setting, and quality drops off with too many heads, suggesting an optimal number of attention heads is necessary for maintaining quality.\n\n2. **Model Size**: Rows (C) and (D) show that bigger models generally perform better, indicating that increasing model size contributes positively to translation quality.\n\n3. **Dropout**: The experiments highlight that dropout is very helpful in avoiding overfitting, which implies that appropriate dropout rates can enhance model performance.\n\nOverall, these variations demonstrate that careful tuning of attention heads, model size, and dropout rates significantly impacts the translation quality as measured by BLEU scores.",
+            "context_tokens_est": 1103,
+            "retrieval": {
+              "embedding_tokens": 39,
+              "llm_tokens": 0,
+              "wall_time": 0.4469931721687317
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 1594,
+              "llm_completion_tokens": 190,
+              "wall_time": 3.716285669244826
+            }
+          }
+        ]
+      },
+      "naive": {
+        "indexing": {
+          "wall_time": 0.14452736731618643,
+          "embedding_tokens": 0,
+          "llm_prompt_tokens": 0,
+          "llm_completion_tokens": 0
+        },
+        "totals": {
+          "embedding_tokens": 0,
+          "llm_tokens": 21283,
+          "time": 17.839749024249613
+        },
+        "questions": [
+          {
+            "id": "A1",
+            "query": "Explain all three types of attention used in the Transformer model. Then compare the computational complexity of self-attention versus recurrent and convolutional layers. Finally, describe the Transformer's results on English constituency parsing.",
+            "answer": "The Transformer model employs three types of attention mechanisms:\n\n1. **Encoder-Decoder Attention**: In this layer, the queries come from the previous decoder layer, while the memory keys and values come from the output of the encoder. This allows each position in the decoder to attend to all positions in the input sequence, mimicking typical encoder-decoder attention mechanisms.\n\n2. **Self-Attention in the Encoder**: In this layer, all keys, values, and queries originate from the same source, specifically the output of the previous layer in the encoder. Each position in the encoder can attend to all positions in the previous layer, enabling the model to capture dependencies within the input sequence.\n\n3. **Self-Attention in the Decoder**: Similar to the encoder's self-attention, this layer allows each position in the decoder to attend to all positions in the decoder up to and including that position. To maintain the auto-regressive property, the model prevents leftward information flow by masking out illegal connections.\n\n### Computational Complexity Comparison\nThe computational complexity of the different layer types is as follows:\n\n- **Self-Attention**: O(n² · d), where n is the sequence length and d is the representation dimension. It requires O(1) sequential operations, allowing for significant parallelization.\n  \n- **Recurrent Layers**: O(n · d²) complexity, requiring O(n) sequential operations, which limits parallelization and makes it less efficient for longer sequences.\n\n- **Convolutional Layers**: O(k · n · d²) complexity, where k is the kernel size. It requires O(1) sequential operations, but the number of operations grows with the kernel size, making it less efficient for long sequences compared to self-attention.\n\n### Results on English Constituency Parsing\nThe Transformer was evaluated on English constituency parsing using a 4-layer architecture with dmodel = 1024. It was trained on the Wall Street Journal (WSJ) portion of the Penn Treebank, which consists of about 40,000 training sentences. The results showed that the Transformer achieved an F1 score of 91.3 on the WSJ only setting, which is competitive with other models. In a semi-supervised setting, it achieved an F1 score of 92.7, outperforming all previously reported models except for the Recurrent Neural Network Grammar, which had an F1 score of 93.3. This demonstrates that the Transformer generalizes well to tasks beyond machine translation, achieving strong performance in constituency parsing without task-specific tuning.",
+            "context_tokens_est": 7927,
+            "retrieval": {
+              "embedding_tokens": 0,
+              "llm_tokens": 0,
+              "wall_time": 0.0
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 10230,
+              "llm_completion_tokens": 517,
+              "wall_time": 11.09399376437068
+            }
+          },
+          {
+            "id": "A2",
+            "query": "What types of regularization were used during training? How do the model variation experiments (Table 3) show the effect of the number of attention heads, model size, and dropout on translation quality?",
+            "answer": "During training, the following types of regularization were used:\n\n1. **Residual Dropout**: Dropout was applied to the output of each sub-layer before it was added to the sub-layer input and normalized. For the base model, a dropout rate of \\( P_{drop} = 0.1 \\) was used.\n\n2. **Label Smoothing**: A label smoothing value of \\( \\epsilon_{ls} = 0.1 \\) was employed, which helps improve accuracy and BLEU score by making the model less confident in its predictions.\n\nRegarding the model variation experiments shown in Table 3:\n\n- **Number of Attention Heads**: The experiments indicated that using a single attention head resulted in a BLEU score that was 0.9 lower than the best setting. This suggests that while having too few heads can reduce performance, there is an optimal number of heads that balances the model's ability to learn different representations.\n\n- **Model Size**: The results showed that larger models generally performed better. For instance, increasing the model size led to improved BLEU scores, indicating that more parameters allow the model to capture more complex patterns in the data.\n\n- **Dropout**: The experiments demonstrated that dropout is beneficial in avoiding overfitting. The results indicated that models with dropout performed better than those without, reinforcing the importance of regularization in enhancing model generalization.\n\nOverall, these variations highlight the importance of tuning the number of attention heads, model size, and dropout rates to optimize translation quality.",
+            "context_tokens_est": 7927,
+            "retrieval": {
+              "embedding_tokens": 0,
+              "llm_tokens": 0,
+              "wall_time": 0.0
+            },
+            "answer_gen": {
+              "llm_prompt_tokens": 10230,
+              "llm_completion_tokens": 306,
+              "wall_time": 6.601227892562747
+            }
+          }
+        ]
+      }
+    }
+  }
+}
