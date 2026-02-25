@@ -303,6 +303,7 @@ class BackgroundProcessor:
         self._running = False
         self._worker_task: Optional[asyncio.Task] = None
         self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._active_tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         """Start the background processing worker."""
@@ -325,17 +326,28 @@ class BackgroundProcessor:
             return
 
         self._running = False
+        # Wake get_next() if it's blocked waiting for work.
+        self.queue._event.set()
         if self._worker_task:
             await self._worker_task
+        if self._active_tasks:
+            await asyncio.gather(*self._active_tasks, return_exceptions=True)
 
         logger.info("Background processor stopped")
+
+    def _has_unfinished_tasks(self) -> bool:
+        """Return True if queue still has pending/processing work."""
+        return any(
+            task.status in ("pending", "processing")
+            for task in self.queue._tasks.values()
+        )
 
     async def _process_loop(self) -> None:
         """Main worker loop - runs continuously while _running is True."""
         cleanup_interval = 3600  # Clean up old tasks every hour
         last_cleanup = time.time()
 
-        while self._running:
+        while self._running or self._has_unfinished_tasks():
             try:
                 # Get next task (with timeout to allow periodic cleanup)
                 doc_id = await self.queue.get_next()
@@ -344,7 +356,11 @@ class BackgroundProcessor:
                     task = self.queue._tasks.get(doc_id)
                     if task:
                         # Process with concurrency limit
-                        asyncio.create_task(self._process_with_semaphore(task))
+                        processing_task = asyncio.create_task(
+                            self._process_with_semaphore(task)
+                        )
+                        self._active_tasks.add(processing_task)
+                        processing_task.add_done_callback(self._active_tasks.discard)
 
                 # Periodic cleanup
                 if time.time() - last_cleanup > cleanup_interval:

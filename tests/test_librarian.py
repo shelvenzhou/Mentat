@@ -32,7 +32,17 @@ def _make_probe_result(
     """Helper to build a ProbeResult with sensible defaults."""
     chunks = [
         Chunk(
-            content=f"Content of chunk {i} with some details about topic {i}.",
+            content=(
+                f"This is section {i} of the document, which provides a comprehensive "
+                f"overview of topic {i} with detailed analysis and supporting evidence. "
+                f"The section begins by establishing foundational concepts and then "
+                f"progresses through an examination of relevant data, drawing on both "
+                f"qualitative and quantitative sources collected over the study period. "
+                f"Key findings indicate that topic {i} has significant implications for "
+                f"the broader field of study. The discussion further explores how these "
+                f"findings connect to established theoretical frameworks and highlights "
+                f"areas requiring additional research."
+            ),
             index=i,
             section=f"Section {i}",
             page=i + 1,
@@ -96,7 +106,8 @@ class TestLibrarianInit:
 
     def test_llm_kwargs_summary_credentials(self):
         lib = Librarian(
-            summary_api_key="sk-sum", summary_api_base="http://sum:9090",
+            summary_api_key="sk-sum",
+            summary_api_base="http://sum:9090",
         )
         kw = lib._llm_kwargs()
         assert kw == {"api_key": "sk-sum", "api_base": "http://sum:9090"}
@@ -158,8 +169,7 @@ class TestSummarizeChunks:
             return _mock_completion_response(
                 {
                     "summaries": [
-                        {"index": i, "summary": f"Summary {i}"}
-                        for i in batch_indices
+                        {"index": i, "summary": f"Summary {i}"} for i in batch_indices
                     ]
                 }
             )
@@ -193,9 +203,7 @@ class TestSummarizeChunks:
         pr = _make_probe_result(num_chunks=2, is_full_content=False)
 
         with patch("mentat.librarian.engine.litellm") as mock_litellm:
-            mock_litellm.acompletion = AsyncMock(
-                side_effect=RuntimeError("API error")
-            )
+            mock_litellm.acompletion = AsyncMock(side_effect=RuntimeError("API error"))
             result = await lib.summarize_chunks(pr)
 
         assert len(result) == 2
@@ -206,7 +214,8 @@ class TestSummarizeChunks:
     @pytest.mark.asyncio
     async def test_forwards_summary_credentials(self):
         lib = Librarian(
-            summary_api_key="sk-sum", summary_api_base="http://sum:9090",
+            summary_api_key="sk-sum",
+            summary_api_base="http://sum:9090",
         )
         pr = _make_probe_result(num_chunks=1, is_full_content=False)
 

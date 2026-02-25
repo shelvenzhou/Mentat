@@ -34,13 +34,13 @@ class LanceDBStorage:
     def _table_names(self) -> Set[str]:
         """Return existing table names as a set of strings.
 
-        Handles both old (``table_names`` → List[str]) and new
-        (``list_tables`` → List[TableInfo]) lancedb APIs.
+        Handles both new (``list_tables`` → List[TableInfo]) and old
+        (``table_names`` → List[str]) lancedb APIs.
         """
         try:
-            raw = self.db.table_names()
-        except AttributeError:
             raw = self.db.list_tables()
+        except AttributeError:
+            raw = self.db.table_names()  # type: ignore[attr-defined]
         # Normalise: entries may be strings or objects with a .name attr
         names: Set[str] = set()
         for item in raw:
@@ -234,10 +234,7 @@ class LanceDBStorage:
         # Strip LanceDB internal fields before re-adding
         clean = []
         for row in updated_rows:
-            clean.append({
-                k: v for k, v in row.items()
-                if not k.startswith("_")
-            })
+            clean.append({k: v for k, v in row.items() if not k.startswith("_")})
 
         self.chunks_table.add(clean)
 

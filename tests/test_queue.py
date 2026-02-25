@@ -182,6 +182,36 @@ class TestProcessingQueue:
         result = await queue.get_next()
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_queue_concurrent_priority_bump(self, sample_probe_result):
+        queue = ProcessingQueue()
+        await queue.submit(
+            ProcessingTask(doc_id="prio-doc", probe_result=sample_probe_result, priority=0)
+        )
+
+        async def bump_many(n: int):
+            for _ in range(n):
+                queue.bump_priority("prio-doc", delta=1)
+                await asyncio.sleep(0)
+
+        workers = 10
+        per_worker = 100
+        await asyncio.gather(*(bump_many(per_worker) for _ in range(workers)))
+
+        assert queue._tasks["prio-doc"].priority == workers * per_worker
+
+    @pytest.mark.asyncio
+    async def test_queue_equal_priority_fifo(self, sample_probe_result):
+        queue = ProcessingQueue()
+
+        await queue.submit(ProcessingTask(doc_id="a", probe_result=sample_probe_result, priority=5))
+        await queue.submit(ProcessingTask(doc_id="b", probe_result=sample_probe_result, priority=5))
+        await queue.submit(ProcessingTask(doc_id="c", probe_result=sample_probe_result, priority=5))
+
+        assert await queue.get_next() == "a"
+        assert await queue.get_next() == "b"
+        assert await queue.get_next() == "c"
+
 
 class TestBackgroundProcessor:
     """Tests for BackgroundProcessor class."""
@@ -362,6 +392,72 @@ class TestBackgroundProcessor:
         # If no limit: ~0.1s (all parallel)
         assert duration > 0.2  # Definitely limited
         assert all(task.status == "completed" for task in tasks)
+
+    @pytest.mark.asyncio
+    async def test_queue_graceful_shutdown_during_processing(self, mock_mentat, sample_probe_result):
+        """Shutdown during processing should still finish queued tasks."""
+        processor = BackgroundProcessor(mock_mentat, max_concurrent=1)
+
+        async def slow_embed(*args, **kwargs):
+            await asyncio.sleep(0.05)
+            return [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]
+
+        mock_mentat.embeddings.embed_batch = AsyncMock(side_effect=slow_embed)
+
+        await processor.start()
+        doc_ids = [f"doc-{i}" for i in range(3)]
+        for doc_id in doc_ids:
+            await processor.queue.submit(
+                ProcessingTask(doc_id=doc_id, probe_result=sample_probe_result)
+            )
+
+        # Give worker a moment to start processing, then stop.
+        await asyncio.sleep(0.02)
+        await processor.stop()
+
+        statuses = [processor.queue.get_status(doc_id) for doc_id in doc_ids]
+        assert all(s and s["status"] == "completed" for s in statuses)
+
+    @pytest.mark.asyncio
+    async def test_queue_task_error_recovery(self, mock_mentat, sample_probe_result):
+        """Failure of one task should not block subsequent tasks."""
+        processor = BackgroundProcessor(mock_mentat, max_concurrent=1)
+
+        call_count = 0
+
+        async def flaky_embed(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("embedding failure")
+            return [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]
+
+        mock_mentat.embeddings.embed_batch = AsyncMock(side_effect=flaky_embed)
+
+        await processor.start()
+        await processor.queue.submit(
+            ProcessingTask(doc_id="fail-doc", probe_result=sample_probe_result)
+        )
+        await processor.queue.submit(
+            ProcessingTask(doc_id="ok-doc", probe_result=sample_probe_result)
+        )
+
+        timeout = time.time() + 5
+        while time.time() < timeout:
+            s1 = processor.queue.get_status("fail-doc")
+            s2 = processor.queue.get_status("ok-doc")
+            if (
+                s1 and s2
+                and s1["status"] in ("failed", "completed")
+                and s2["status"] in ("failed", "completed")
+            ):
+                break
+            await asyncio.sleep(0.05)
+
+        await processor.stop()
+
+        assert processor.queue.get_status("fail-doc")["status"] == "failed"
+        assert processor.queue.get_status("ok-doc")["status"] == "completed"
 
 
 class TestIntegration:

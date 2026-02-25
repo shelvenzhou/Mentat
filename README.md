@@ -28,16 +28,17 @@ Mentat solves the **"Token Explosion"** problem in traditional RAG. Instead of f
 
 Mentat offers two indexing modes with async/sync processing:
 
-| Mode | Async Return Time | Full Processing | LLM Calls | Use Case |
-|------|------------------|-----------------|-----------|----------|
-| **Fast + Async (default)** | ~1-3s | ~10-15s (background) | Embeddings only | Production indexing, responsive UIs, large batches |
-| **Fast + Sync** | ~10-15s | ~10-15s (blocking) | Embeddings only | Legacy compatibility |
-| **Full + Async** | ~1-3s | ~30-60s (background) | Summaries + Instructions | High-quality with responsiveness |
-| **Full + Sync** | ~30-60s | ~30-60s (blocking) | Summaries + Instructions | High-quality, wait for completion |
+| Mode                       | Async Return Time | Full Processing      | LLM Calls                | Use Case                                           |
+| -------------------------- | ----------------- | -------------------- | ------------------------ | -------------------------------------------------- |
+| **Fast + Async (default)** | ~1-3s             | ~10-15s (background) | Embeddings only          | Production indexing, responsive UIs, large batches |
+| **Fast + Sync**            | ~10-15s           | ~10-15s (blocking)   | Embeddings only          | Legacy compatibility                               |
+| **Full + Async**           | ~1-3s             | ~30-60s (background) | Summaries + Instructions | High-quality with responsiveness                   |
+| **Full + Sync**            | ~30-60s           | ~30-60s (blocking)   | Summaries + Instructions | High-quality, wait for completion                  |
 
 **Async Mode (NEW)**: Returns immediately after probe + ToC extraction (~1-3s), then processes embeddings/summarization in background. ToC is available immediately for inspection; full vector search available after background processing completes.
 
 **Benchmark** (single JSON file, 30 chunks):
+
 ```
 Fast + Async:  1.48s → returns immediately (background: +10s)
 Fast + Sync:   11.2s (blocking)
@@ -64,21 +65,21 @@ See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for detailed performance analysis.
 
 Each probe extracts a `ProbeResult` containing: topic summary, hierarchical table of contents (with preview and annotation per entry), statistics, and content chunks. Small files bypass extraction and return full content. After structural splitting, adjacent small chunks (< 300 tokens) are merged via `merge_small_chunks()` while respecting H1/H2 hard boundaries, keeping chunks meaningful for embedding and summarisation without crossing major section boundaries.
 
-| Format     | Extension(s)                         | Library          | Extracts                                                             |
-| ---------- | ------------------------------------ | ---------------- | -------------------------------------------------------------------- |
-| PDF        | `.pdf`                               | `pymupdf`        | Title, ToC (native + font-inferred), captions, per-page chunks       |
-| Image      | `.jpg/.png/.gif/.bmp/.tiff/.webp`    | `Pillow`         | Dimensions, format, color mode, EXIF (camera, GPS, date)             |
-| Word       | `.docx`                              | `python-docx`    | Heading hierarchy, tables, metadata (author, dates), section chunks  |
-| PowerPoint | `.pptx`                              | `python-pptx`    | Slide titles, bullets, speaker notes, image/table counts             |
-| Calendar   | `.ics`                               | `icalendar`      | Events with dates, recurrence, attendees, time range                 |
-| Archive    | `.zip/.tar/.tar.gz/.tgz/.tar.bz2`   | stdlib           | Directory tree, file type distribution, size stats                   |
-| CSV        | `.csv`                               | `pandas`         | Column types, cardinality, null rates, representative rows           |
-| JSON       | `.json`                              | stdlib           | Schema tree (depth-limited), per-key chunks, value previews          |
-| Config     | `.yaml/.toml/.ini/.conf/.cfg`        | stdlib + `tomli` | Key hierarchy, value types, full content (configs are small)         |
-| Code       | `.py/.js/.jsx/.ts/.tsx`              | `tree-sitter`    | Imports, classes, functions, signatures, docstrings, hierarchical ToC|
-| Log        | `.log`                               | regex            | Time range, error level stats, format detection, keyword extraction  |
-| Markdown   | `.md/.markdown`                      | regex            | Heading hierarchy with preview/annotation, section-aware chunks      |
-| Web/HTML   | `.html/.htm`                         | `trafilatura`    | Heading structure, meta tags, semantic elements, section chunks      |
+| Format     | Extension(s)                      | Library          | Extracts                                                              |
+| ---------- | --------------------------------- | ---------------- | --------------------------------------------------------------------- |
+| PDF        | `.pdf`                            | `pymupdf`        | Title, ToC (native + font-inferred), captions, per-page chunks        |
+| Image      | `.jpg/.png/.gif/.bmp/.tiff/.webp` | `Pillow`         | Dimensions, format, color mode, EXIF (camera, GPS, date)              |
+| Word       | `.docx`                           | `python-docx`    | Heading hierarchy, tables, metadata (author, dates), section chunks   |
+| PowerPoint | `.pptx`                           | `python-pptx`    | Slide titles, bullets, speaker notes, image/table counts              |
+| Calendar   | `.ics`                            | `icalendar`      | Events with dates, recurrence, attendees, time range                  |
+| Archive    | `.zip/.tar/.tar.gz/.tgz/.tar.bz2` | stdlib           | Directory tree, file type distribution, size stats                    |
+| CSV        | `.csv`                            | `pandas`         | Column types, cardinality, null rates, representative rows            |
+| JSON       | `.json`                           | stdlib           | Schema tree (depth-limited), per-key chunks, value previews           |
+| Config     | `.yaml/.toml/.ini/.conf/.cfg`     | stdlib + `tomli` | Key hierarchy, value types, full content (configs are small)          |
+| Code       | `.py/.js/.jsx/.ts/.tsx`           | `tree-sitter`    | Imports, classes, functions, signatures, docstrings, hierarchical ToC |
+| Log        | `.log`                            | regex            | Time range, error level stats, format detection, keyword extraction   |
+| Markdown   | `.md/.markdown`                   | regex            | Heading hierarchy with preview/annotation, section-aware chunks       |
+| Web/HTML   | `.html/.htm`                      | `trafilatura`    | Heading structure, meta tags, semantic elements, section chunks       |
 
 Probes are tried in order (most specific first); first match wins. Image, Word, PowerPoint, and Calendar probes degrade gracefully if their dependencies are missing.
 
@@ -284,17 +285,40 @@ mentat inspect <doc_id_from_step_2>
 
 ## Testing
 
+The full test suite runs without any API keys — all LLM calls are mocked.
+
 ```bash
-# Run all tests (no API keys needed — LLM calls are mocked)
+# Run all tests
 uv run pytest tests/ -v
 
-# Run specific test files
-uv run pytest tests/test_librarian.py -v    # Librarian layer tests
-uv run pytest tests/test_config.py -v       # Config + env var tests
-uv run pytest tests/test_vector_db.py -v    # LanceDB storage tests
-uv run pytest tests/test_cache.py -v        # Content hash cache tests
-uv run pytest tests/test_collections.py -v  # Collection store tests
+# Run only a specific group
+uv run pytest tests/test_smoke.py -v         # End-to-end smoke tests (mock embedding)
+uv run pytest tests/test_queue.py -v         # ProcessingQueue & BackgroundProcessor
+uv run pytest tests/test_async_summary.py -v # Async summarisation pipeline
+uv run pytest tests/test_queue_perf.py -v    # Queue throughput & latency
 ```
+
+### Test Coverage
+
+| File                     | What it tests                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------------- |
+| `test_smoke.py`          | End-to-end: probe → add → search → inspect → collections → stats (mock embedding)     |
+| `test_queue.py`          | ProcessingQueue (priority, FIFO, bump, cleanup) + BackgroundProcessor lifecycle       |
+| `test_async_summary.py`  | Async summarisation flag propagation, status progression, concurrent docs             |
+| `test_queue_perf.py`     | Throughput (100 tasks), submit→start latency, memory boundedness, concurrency scaling |
+| `test_librarian.py`      | Librarian chunk summarisation, batching, fallback, template generation                |
+| `test_probe_utils.py`    | Token estimation, bypass, preview extraction, truncation, format_size, safe_read_text |
+| `test_access_tracker.py` | Two-layer FIFO tracker: promotion, eviction, callbacks, stats                         |
+| `test_embeddings.py`     | EmbeddingRegistry, LiteLLMEmbedding batching, truncation, order preservation          |
+| `test_telemetry.py`      | Telemetry time_it, token/savings recording, format_stats output                       |
+| `test_file_store.py`     | LocalFileStore save, get_path, exists, get_size, total_size                           |
+| `test_models.py`         | Pydantic model validation: Chunk, TocEntry, ProbeResult serialisation                 |
+| `test_config.py`         | Config loading and env var precedence                                                 |
+| `test_vector_db.py`      | LanceDB storage: stubs, chunks, search, hybrid, collections                           |
+| `test_cache.py`          | Content hash cache deduplication                                                      |
+| `test_collections.py`    | CollectionStore (add, remove, scoped search)                                          |
+| `test_async_workflow.py` | Full async add → search workflow integration                                          |
+| `test_performance.py`    | Probe + indexing performance baselines                                                |
 
 ## Telemetry
 
