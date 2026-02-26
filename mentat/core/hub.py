@@ -47,6 +47,7 @@ class MentatResult(BaseModel):
     brief_intro: str = ""
     instructions: str = ""
     score: float = 0.0
+    toc_entries: List[dict] = []  # Populated in toc_only search mode
 
 
 @dataclass
@@ -175,10 +176,12 @@ class Mentat:
         self._adaptors: List[BaseAdaptor] = []
 
         # Access tracker (two-layer FIFO for on-demand embedding)
+        heat_map_path = str(Path(self.config.db_path) / "heat_map.json")
         self.access_tracker = AccessTracker(
             recent_size=self.config.access_recent_size,
             hot_size=self.config.access_hot_size,
             on_promote=self._on_access_promote,
+            persist_path=heat_map_path,
         )
 
         # Background processor (async queue system)
@@ -215,6 +218,7 @@ class Mentat:
         Should be called on application shutdown.
         """
         await self.processor.stop()
+        self.access_tracker.save_now()
 
     async def add(
         self,
@@ -616,6 +620,7 @@ class Mentat:
         top_k: int = 5,
         hybrid: bool = False,
         doc_ids: Optional[List[str]] = None,
+        toc_only: bool = False,
     ) -> List[MentatResult]:
         """Search for relevant chunks and return results with instructions.
 
@@ -624,6 +629,9 @@ class Mentat:
 
         Args:
             doc_ids: If provided, restrict search to these documents only.
+            toc_only: If True, return one result per document with ToC entries
+                and matched section names instead of full chunk content.
+                This is step 1 of the two-step retrieval protocol.
         """
         # Transform query via adaptors
         for adaptor in self._adaptors:
@@ -643,6 +651,10 @@ class Mentat:
         for did in unique_doc_ids:
             if did:
                 stub_cache[did] = self.storage.get_stub(did) or {}
+
+        # ToC-only mode: group by document, return summaries instead of chunks
+        if toc_only:
+            return self._build_toc_results(raw_results, stub_cache, top_k)
 
         # Only check queue status if the processor has pending/processing tasks
         has_active_tasks = bool(self.processor.queue._tasks)
@@ -685,6 +697,77 @@ class Mentat:
                 result_dicts = adaptor.on_search_results(query, result_dicts)
 
         return results
+
+    def _build_toc_results(
+        self,
+        raw_results: List[Dict[str, Any]],
+        stub_cache: Dict[str, Dict],
+        top_k: int,
+    ) -> List[MentatResult]:
+        """Group chunk-level search results by document, returning ToC summaries.
+
+        Used in toc_only mode: one MentatResult per document with matched
+        section names and full ToC entries instead of chunk content.
+        """
+        doc_groups: Dict[str, Dict[str, Any]] = {}
+
+        for r in raw_results:
+            doc_id = r.get("doc_id", "")
+            section = r.get("section", "")
+            score = r.get("_distance", 0.0)
+
+            if doc_id not in doc_groups:
+                doc_groups[doc_id] = {"sections": set(), "best_score": score}
+            if section:
+                doc_groups[doc_id]["sections"].add(section)
+            doc_groups[doc_id]["best_score"] = min(
+                doc_groups[doc_id]["best_score"], score
+            )
+
+        results = []
+        for doc_id, group in doc_groups.items():
+            stub = stub_cache.get(doc_id, {})
+
+            # Extract ToC entries from probe_json
+            toc_entries: List[dict] = []
+            probe_json_str = stub.get("probe_json", "")
+            if probe_json_str:
+                try:
+                    probe_data = json.loads(probe_json_str)
+                    toc_entries = probe_data.get("structure", {}).get("toc", [])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            matched_sections = sorted(group["sections"])
+            instructions = stub.get("instruction", "")
+
+            # Append processing status if applicable
+            status_info = self.processor.queue.get_status(doc_id)
+            if status_info and status_info.get("status") in ("pending", "processing"):
+                self.processor.queue.bump_priority(doc_id, delta=10)
+                status_val = status_info["status"]
+                if status_val == "pending":
+                    instructions += "\n\n⏳ [Processing: This document is queued for embedding and will be fully searchable soon]"
+                elif status_val == "processing":
+                    instructions += "\n\n🔄 [Processing: This document is currently being indexed and will be fully available shortly]"
+
+            results.append(
+                MentatResult(
+                    doc_id=doc_id,
+                    chunk_id="",
+                    filename=stub.get("filename", ""),
+                    section=", ".join(matched_sections) if matched_sections else None,
+                    content="",
+                    summary="",
+                    brief_intro=stub.get("brief_intro", ""),
+                    instructions=instructions,
+                    score=group["best_score"],
+                    toc_entries=toc_entries,
+                )
+            )
+
+        results.sort(key=lambda r: r.score)
+        return results[:top_k]
 
     async def inspect(self, doc_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve full probe results, instructions, and chunk summaries."""
@@ -1020,6 +1103,110 @@ class Mentat:
             "token_estimate": 0,
         }
         result["token_estimate"] = estimate_tokens(json.dumps(result, default=str))
+        return result
+
+    async def read_segment(
+        self,
+        doc_id: str,
+        section_path: str,
+        include_summary: bool = True,
+    ) -> Dict[str, Any]:
+        """Read a specific section's content by doc_id and section name.
+
+        This is step 2 of the two-step retrieval protocol:
+        1. Agent calls search(toc_only=True) to discover documents + sections
+        2. Agent calls read_segment(doc_id, section) to get specific content
+
+        Section matching is case-insensitive substring match.
+
+        Args:
+            doc_id: Document identifier from search results.
+            section_path: Section name or partial match (e.g. "Installation"
+                matches "Installation Guide").
+            include_summary: Include chunk summaries alongside content.
+
+        Returns:
+            Dict with doc_id, filename, section_path, chunks, toc_context,
+            token_estimate.
+        """
+        stub = self.storage.get_stub(doc_id)
+        if not stub:
+            return {
+                "doc_id": doc_id,
+                "error": "document_not_found",
+                "chunks": [],
+            }
+
+        # Get stored chunks for this doc
+        chunk_rows = self.storage.get_chunks_by_doc(doc_id)
+
+        # Match chunks by section name (case-insensitive contains match)
+        section_lower = section_path.lower().strip()
+        matched_chunks = []
+
+        for row in chunk_rows:
+            chunk_section = (row.get("section", "") or "").lower()
+            if not chunk_section:
+                continue  # Skip chunks with no section label
+            if (
+                chunk_section == section_lower
+                or section_lower in chunk_section
+                or (chunk_section and chunk_section in section_lower)
+            ):
+                entry: Dict[str, Any] = {
+                    "chunk_index": row.get("chunk_index", 0),
+                    "section": row.get("section", ""),
+                    "content": row.get("content", ""),
+                }
+                if include_summary and row.get("summary"):
+                    entry["summary"] = row["summary"]
+                matched_chunks.append(entry)
+
+        # Extract matching ToC entries for context
+        toc_context: List[dict] = []
+        probe_json_str = stub.get("probe_json", "")
+        if probe_json_str:
+            try:
+                probe_data = json.loads(probe_json_str)
+                toc = probe_data.get("structure", {}).get("toc", [])
+                for toc_entry in toc:
+                    title = (toc_entry.get("title", "") or "").lower()
+                    if not title:
+                        continue
+                    if (
+                        title == section_lower
+                        or section_lower in title
+                        or title in section_lower
+                    ):
+                        toc_context.append(toc_entry)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        result: Dict[str, Any] = {
+            "doc_id": doc_id,
+            "filename": stub.get("filename", ""),
+            "section_path": section_path,
+            "chunks": matched_chunks,
+            "toc_context": toc_context,
+            "token_estimate": estimate_tokens(
+                json.dumps(matched_chunks, default=str)
+            ),
+        }
+
+        # If no chunks found, provide guidance
+        if not matched_chunks:
+            status = self.get_processing_status(doc_id)
+            if status.get("status") in ("pending", "processing"):
+                result["note"] = (
+                    "Document is still being processed. "
+                    "Chunks not yet available."
+                )
+            else:
+                result["note"] = (
+                    f"No chunks matched section '{section_path}'. "
+                    "Use search(toc_only=True) to discover available sections."
+                )
+
         return result
 
     def stats(self) -> Dict[str, Any]:

@@ -42,6 +42,7 @@ class SearchRequest(BaseModel):
     top_k: int = 5
     hybrid: bool = False
     collection: Optional[str] = None
+    toc_only: bool = False
 
 
 class TrackRequest(BaseModel):
@@ -58,6 +59,12 @@ class ProbeRequest(BaseModel):
     path: Optional[str] = None
     content: Optional[str] = None
     filename: Optional[str] = None
+
+
+class ReadSegmentRequest(BaseModel):
+    doc_id: str
+    section_path: str
+    include_summary: bool = True
 
 
 class CollectionAddRequest(BaseModel):
@@ -132,7 +139,9 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             coll = m.collection(req.collection)
             results = await coll.search(req.query, top_k=req.top_k, hybrid=req.hybrid)
         else:
-            results = await m.search(req.query, top_k=req.top_k, hybrid=req.hybrid)
+            results = await m.search(
+                req.query, top_k=req.top_k, hybrid=req.hybrid, toc_only=req.toc_only
+            )
         return {"results": [r.model_dump() for r in results]}
 
     # ── Status / Inspect ─────────────────────────────────────────────
@@ -161,6 +170,19 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
         return await _mentat().read_structured(
             req.path, sections=req.sections, include_content=req.include_content
         )
+
+    # ── Read Segment (by doc_id + section) ────────────────────────
+
+    @app.post("/read-segment")
+    async def read_segment(req: ReadSegmentRequest):
+        result = await _mentat().read_segment(
+            req.doc_id, req.section_path, include_summary=req.include_summary
+        )
+        if result.get("error") == "document_not_found":
+            raise HTTPException(
+                status_code=404, detail=f"Document not found: {req.doc_id}"
+            )
+        return result
 
     # ── Probe ────────────────────────────────────────────────────────
 
@@ -197,6 +219,14 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
                 status_code=400,
                 detail="Provide either 'path' or both 'content' and 'filename'",
             )
+
+    # ── Skill ──────────────────────────────────────────────────────────
+
+    @app.get("/skill")
+    async def skill():
+        from mentat.skill import export_skill
+
+        return export_skill()
 
     # ── Stats ────────────────────────────────────────────────────────
 

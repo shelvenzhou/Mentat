@@ -23,6 +23,7 @@ Usage:
 from mentat.core.hub import Mentat, MentatConfig, MentatResult, Collection
 from mentat.probes import run_probe
 from mentat.probes.base import ProbeResult, TopicInfo, StructureInfo, Chunk
+from mentat.skill import get_tool_schemas, get_system_prompt, export_skill
 from typing import List, Optional
 
 
@@ -47,10 +48,17 @@ async def add_batch(
 
 
 async def search(
-    query: str, top_k: int = 5, hybrid: bool = False
+    query: str, top_k: int = 5, hybrid: bool = False, toc_only: bool = False
 ) -> List[MentatResult]:
-    """Search for relevant content."""
-    return await Mentat.get_instance().search(query, top_k=top_k, hybrid=hybrid)
+    """Search for relevant content.
+
+    Args:
+        toc_only: If True, return document-level ToC summaries instead of
+            full chunk content (step 1 of two-step retrieval protocol).
+    """
+    return await Mentat.get_instance().search(
+        query, top_k=top_k, hybrid=hybrid, toc_only=toc_only
+    )
 
 
 async def inspect(doc_id: str) -> Optional[dict]:
@@ -179,6 +187,17 @@ async def read_structured(
     )
 
 
+async def read_segment(
+    doc_id: str,
+    section_path: str,
+    include_summary: bool = True,
+) -> dict:
+    """Read a specific section by doc_id and section name (step 2 of two-step retrieval)."""
+    return await Mentat.get_instance().read_segment(
+        doc_id, section_path, include_summary=include_summary
+    )
+
+
 async def track_access(path: str) -> dict:
     """Record a file access event. Frequently accessed files are auto-indexed."""
     return await Mentat.get_instance().track_access(path)
@@ -203,7 +222,12 @@ __all__ = [
     # Content & RAG APIs
     "add_content",
     "read_structured",
+    "read_segment",
     "track_access",
+    # Skill integration
+    "get_tool_schemas",
+    "get_system_prompt",
+    "export_skill",
     # Classes
     "Mentat",
     "MentatConfig",

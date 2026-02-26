@@ -89,3 +89,48 @@ def test_stats():
     assert stats["recent_capacity"] == 3
     assert stats["hot_count"] == 0
     assert stats["hot_capacity"] == 2
+
+
+# ── Persistence Tests ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_persistence_save_and_load(tmp_path):
+    path = str(tmp_path / "heat_map.json")
+
+    tracker1 = AccessTracker(recent_size=5, hot_size=5, persist_path=path)
+    await tracker1.track("k1")
+    await tracker1.track("k2")
+    await tracker1.track("k2")  # promote k2 to hot
+    tracker1.save_now()
+
+    # Create new tracker from same file
+    tracker2 = AccessTracker(recent_size=5, hot_size=5, persist_path=path)
+    assert tracker2.is_recent("k1")
+    assert tracker2.is_hot("k2")
+    assert not tracker2.is_recent("k2")
+
+
+@pytest.mark.asyncio
+async def test_persistence_missing_file():
+    tracker = AccessTracker(
+        recent_size=5, hot_size=5, persist_path="/tmp/nonexistent_dir_xyz/heat.json"
+    )
+    # Should not raise, just start empty
+    assert tracker.stats()["recent_count"] == 0
+
+
+def test_save_now_no_persist_path():
+    tracker = AccessTracker(recent_size=5, hot_size=5)
+    tracker.save_now()  # Should be a no-op, no error
+
+
+@pytest.mark.asyncio
+async def test_persistence_corrupted_file(tmp_path):
+    path = tmp_path / "heat_map.json"
+    path.write_text("not valid json{{{")
+
+    tracker = AccessTracker(recent_size=5, hot_size=5, persist_path=str(path))
+    # Should recover gracefully, start empty
+    assert tracker.stats()["recent_count"] == 0
+    assert tracker.stats()["hot_count"] == 0

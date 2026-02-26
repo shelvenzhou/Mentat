@@ -148,14 +148,17 @@ def index(paths, force, coll_name, summarize, llm_instructions, wait, concurrenc
 @click.option(
     "-c", "--collection", "coll_name", default=None, help="Search within a collection"
 )
-def search(query, top_k, hybrid, coll_name):
+@click.option(
+    "--toc-only", is_flag=True, help="Return ToC summaries only (no chunk content)"
+)
+def search(query, top_k, hybrid, coll_name, toc_only):
     """Search for relevant files/strategies."""
     m = Mentat()
     if coll_name:
         coll = m.collection(coll_name)
         results = asyncio.run(coll.search(query, top_k=top_k, hybrid=hybrid))
     else:
-        results = asyncio.run(m.search(query, top_k=top_k, hybrid=hybrid))
+        results = asyncio.run(m.search(query, top_k=top_k, hybrid=hybrid, toc_only=toc_only))
     if not results:
         click.echo("No results found.")
         return
@@ -223,6 +226,42 @@ def inspect(doc_id):
             sec = f" [{cs['section']}]" if cs.get("section") else ""
             summary = cs.get("summary", "")[:120]
             click.echo(f"    [{idx}]{sec}: {summary}")
+
+
+@cli.command()
+@click.argument("doc_id")
+@click.argument("section")
+def segment(doc_id, section):
+    """Read a specific section from an indexed document.
+
+    Step 2 of the two-step retrieval protocol.
+
+    Examples:
+        mentat segment abc12345 "Installation"
+        mentat segment abc12345 "Chapter 1/Setup"
+    """
+    m = Mentat()
+    result = asyncio.run(m.read_segment(doc_id, section))
+
+    if result.get("error"):
+        click.echo(f"Error: {result['error']}")
+        return
+
+    click.echo(f"\n{'=' * 60}")
+    click.echo(f"  Document: {result.get('filename', 'unknown')}")
+    click.echo(f"  Section: {result.get('section_path', section)}")
+    click.echo(f"  Chunks: {len(result.get('chunks', []))}")
+    click.echo(f"{'=' * 60}")
+
+    for chunk in result.get("chunks", []):
+        click.echo(f"\n  [{chunk.get('chunk_index', '?')}] {chunk.get('section', '')}")
+        preview = chunk.get("content", "")[:500]
+        click.echo(f"  {preview}")
+        if chunk.get("summary"):
+            click.echo(f"  Summary: {chunk['summary'][:200]}")
+
+    if result.get("note"):
+        click.echo(f"\n  Note: {result['note']}")
 
 
 @cli.command()
@@ -438,6 +477,32 @@ def collection_remove(name, doc_id):
     m = Mentat()
     m.collection(name).remove(doc_id)
     click.echo(f"Removed {doc_id[:8]}… from '{name}'.")
+
+
+@cli.command()
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["json", "prompt"]),
+    default="json",
+    help="Output format: json (full export) or prompt (system prompt only)",
+)
+def skill(fmt):
+    """Export agent tool definitions and system prompt.
+
+    Outputs OpenAI function calling tool schemas and a system prompt
+    fragment for the two-step retrieval protocol.
+
+    Examples:
+        mentat skill                  # Full JSON export
+        mentat skill --format prompt  # System prompt only
+    """
+    from mentat.skill import export_skill, get_system_prompt
+
+    if fmt == "prompt":
+        click.echo(get_system_prompt())
+    else:
+        click.echo(json.dumps(export_skill(), indent=2))
 
 
 @cli.command()

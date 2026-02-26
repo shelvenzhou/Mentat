@@ -199,3 +199,89 @@ async def test_smoke_stats(smoke_mentat, tmp_path):
     assert "storage_size_bytes" in s
     assert "access_tracker" in s
     assert s["docs_indexed"] >= 1
+
+
+# ── ToC-only Search Tests ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_search_toc_only(smoke_mentat, tmp_path):
+    p = tmp_path / "toc_doc.md"
+    p.write_text(
+        "# Chapter 1\n\nIntroduction text here.\n\n"
+        "## Section A\n\nDetails about section A.\n\n"
+        "## Section B\n\nDetails about section B."
+    )
+
+    doc_id = await smoke_mentat.add(str(p), force=True, wait=True)
+    results = await smoke_mentat.search("introduction", top_k=5, toc_only=True)
+
+    assert len(results) >= 1
+    r = results[0]
+    # In toc_only mode, content should be empty
+    assert r.content == ""
+    assert r.brief_intro != ""
+    assert r.doc_id == doc_id
+    # toc_entries should be populated
+    assert isinstance(r.toc_entries, list)
+    assert len(r.toc_entries) >= 1
+
+
+@pytest.mark.asyncio
+async def test_search_toc_only_shows_matched_sections(smoke_mentat, tmp_path):
+    p = tmp_path / "multi.md"
+    p.write_text(
+        "# Main\n\nMain intro.\n\n"
+        "## Installation\n\nInstall steps.\n\n"
+        "## Usage\n\nUsage info."
+    )
+
+    await smoke_mentat.add(str(p), force=True, wait=True)
+    results = await smoke_mentat.search("install steps", top_k=5, toc_only=True)
+
+    assert len(results) >= 1
+    # toc_entries should contain the document's table of contents
+    assert isinstance(results[0].toc_entries, list)
+    assert len(results[0].toc_entries) >= 1
+
+
+# ── read_segment Tests ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_read_segment(smoke_mentat, tmp_path):
+    p = tmp_path / "multi_section.md"
+    p.write_text(
+        "# Chapter 1\n\nIntro text.\n\n"
+        "## Setup\n\nSetup instructions here.\n\n"
+        "## Usage\n\nUsage details here."
+    )
+
+    doc_id = await smoke_mentat.add(str(p), force=True, wait=True)
+    result = await smoke_mentat.read_segment(doc_id, "Setup")
+
+    assert result["doc_id"] == doc_id
+    assert result["filename"] != ""
+    assert result["section_path"] == "Setup"
+    assert isinstance(result["chunks"], list)
+    assert isinstance(result["token_estimate"], int)
+
+
+@pytest.mark.asyncio
+async def test_read_segment_not_found(smoke_mentat):
+    result = await smoke_mentat.read_segment("nonexistent-id", "anything")
+    assert result.get("error") == "document_not_found"
+    assert result["chunks"] == []
+
+
+@pytest.mark.asyncio
+async def test_read_segment_no_matching_section(smoke_mentat, tmp_path):
+    p = tmp_path / "simple.md"
+    p.write_text("# Title\n\nSome content here.")
+
+    doc_id = await smoke_mentat.add(str(p), force=True, wait=True)
+    result = await smoke_mentat.read_segment(doc_id, "NonExistentSection")
+
+    assert result["doc_id"] == doc_id
+    assert result["chunks"] == []
+    assert "note" in result
