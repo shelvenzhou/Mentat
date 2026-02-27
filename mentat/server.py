@@ -7,15 +7,92 @@ Start with ``mentat serve`` or programmatically::
     uvicorn.run(create_app(), host="0.0.0.0", port=7832)
 """
 
+import json
+import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional  # noqa: F401 – Dict used in Pydantic models
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from mentat.core.hub import Mentat, MentatConfig
+
+logger = logging.getLogger("mentat.server")
+
+# Maximum bytes of request body to log (avoid dumping huge content payloads)
+_MAX_BODY_LOG = 1024
+
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Log every HTTP request with method, path, body summary, status, and duration."""
+
+    async def dispatch(self, request: Request, call_next):
+        start = time.perf_counter()
+        path = request.url.path
+        method = request.method
+
+        # Read and cache request body for logging
+        body_bytes = await request.body()
+        body_summary = self._summarise_body(path, body_bytes)
+
+        response: Response = await call_next(request)
+
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.info(
+            "%s %s %d (%.1fms)%s",
+            method,
+            path,
+            response.status_code,
+            elapsed_ms,
+            f"  {body_summary}" if body_summary else "",
+        )
+        return response
+
+    @staticmethod
+    def _summarise_body(path: str, body_bytes: bytes) -> str:
+        """Return a compact, useful summary of the request body."""
+        if not body_bytes:
+            return ""
+        try:
+            data = json.loads(body_bytes)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return f"[{len(body_bytes)}B binary]"
+
+        # Per-endpoint summaries — show the fields that matter, skip bulky ones
+        if path == "/index":
+            return f"path={data.get('path')} source={data.get('source', '')}"
+        if path == "/index-content":
+            content_len = len(data.get("content", ""))
+            return (
+                f"filename={data.get('filename')} "
+                f"source={data.get('source', '')} "
+                f"content={content_len} chars"
+            )
+        if path == "/search":
+            return (
+                f"query={data.get('query')!r} "
+                f"top_k={data.get('top_k', 5)} "
+                f"toc_only={data.get('toc_only', False)}"
+            )
+        if path == "/read-segment":
+            return (
+                f"doc_id={data.get('doc_id', '')[:8]}… "
+                f"section={data.get('section_path')!r}"
+            )
+        if path == "/probe":
+            if data.get("path"):
+                return f"path={data['path']}"
+            return f"filename={data.get('filename')} content={len(data.get('content', ''))} chars"
+
+        # Fallback: dump compact JSON, truncated
+        compact = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        if len(compact) > _MAX_BODY_LOG:
+            compact = compact[:_MAX_BODY_LOG] + "…"
+        return compact
 
 
 # ── Request / Response Models ────────────────────────────────────────────
@@ -26,6 +103,8 @@ class IndexRequest(BaseModel):
     force: bool = False
     summarize: bool = False
     wait: bool = False
+    source: str = ""
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class IndexContentRequest(BaseModel):
@@ -35,6 +114,8 @@ class IndexContentRequest(BaseModel):
     force: bool = False
     summarize: bool = False
     wait: bool = False
+    source: str = ""
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class SearchRequest(BaseModel):
@@ -43,6 +124,7 @@ class SearchRequest(BaseModel):
     hybrid: bool = False
     collection: Optional[str] = None
     toc_only: bool = False
+    source: Optional[str] = None
 
 
 class TrackRequest(BaseModel):
@@ -93,6 +175,8 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.add_middleware(RequestLoggingMiddleware)
+
     def _mentat() -> Mentat:
         return Mentat.get_instance()
 
@@ -111,7 +195,12 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
         if not Path(resolved).is_file():
             raise HTTPException(status_code=404, detail=f"File not found: {req.path}")
         doc_id = await m.add(
-            resolved, force=req.force, summarize=req.summarize, wait=req.wait
+            resolved,
+            force=req.force,
+            summarize=req.summarize,
+            wait=req.wait,
+            source=req.source,
+            metadata=req.metadata,
         )
         status = m.get_processing_status(doc_id)
         return {"doc_id": doc_id, "status": status.get("status", "unknown")}
@@ -126,6 +215,8 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             force=req.force,
             summarize=req.summarize,
             wait=req.wait,
+            source=req.source,
+            metadata=req.metadata,
         )
         status = m.get_processing_status(doc_id)
         return {"doc_id": doc_id, "status": status.get("status", "unknown")}
@@ -140,7 +231,11 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             results = await coll.search(req.query, top_k=req.top_k, hybrid=req.hybrid)
         else:
             results = await m.search(
-                req.query, top_k=req.top_k, hybrid=req.hybrid, toc_only=req.toc_only
+                req.query,
+                top_k=req.top_k,
+                hybrid=req.hybrid,
+                toc_only=req.toc_only,
+                source=req.source,
             )
         return {"results": [r.model_dump() for r in results]}
 

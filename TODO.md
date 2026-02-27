@@ -1,6 +1,6 @@
 # TODO: OpenClaw Integration Remaining Features
 
-This document tracks features needed to complete Mentat's integration as OpenClaw's memory system, per the Design 3.0 spec (`design-docs/benchmark-res/design3.0.md`).
+This document tracks features needed to complete Mentat's integration as OpenClaw's memory system, per the Design 3.0 spec (`design-docs/design3.0.md`).
 
 ## Completed (P0)
 

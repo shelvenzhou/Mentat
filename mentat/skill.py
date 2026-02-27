@@ -42,6 +42,8 @@ token-efficient: you only read what you need.
 - Section names from search results can be used directly in read_segment
 - Documents may be processing in the background; check status if chunks are empty
 - High-frequency sections are auto-summarized for faster future retrieval
+- Use the `source` parameter to scope searches (e.g. "composio:gmail", "web_fetch", "browser")
+- Each indexed document has a source tag showing where the content originated
 """
 
 
@@ -80,6 +82,14 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                     "collection": {
                         "type": "string",
                         "description": "Optional collection name to scope search",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": (
+                            "Filter by content source. Exact match or glob "
+                            "prefix (e.g. 'web_fetch', 'composio:*', "
+                            "'composio:gmail'). Omit to search all sources."
+                        ),
                     },
                 },
                 "required": ["query"],
@@ -162,6 +172,14 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                         "type": "boolean",
                         "description": "Wait for processing to complete before returning",
                         "default": False,
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Origin tag for provenance tracking (e.g. 'upload', 'workspace')",
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": "Arbitrary key-value metadata to store with the document",
                     },
                 },
                 "required": ["path"],

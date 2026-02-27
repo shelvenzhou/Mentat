@@ -24,16 +24,23 @@ from mentat.core.hub import Mentat, MentatConfig, MentatResult, Collection
 from mentat.probes import run_probe
 from mentat.probes.base import ProbeResult, TopicInfo, StructureInfo, Chunk
 from mentat.skill import get_tool_schemas, get_system_prompt, export_skill
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 async def add(path: str, force: bool = False, **kwargs) -> str:
-    """Index a file. Returns document ID."""
+    """Index a file. Returns document ID.
+
+    Accepts optional ``source`` (str) and ``metadata`` (dict) for provenance tracking.
+    """
     return await Mentat.get_instance().add(path, force=force, **kwargs)
 
 
 async def add_batch(
-    paths: List[str], force: bool = False, summarize: bool = False
+    paths: List[str],
+    force: bool = False,
+    summarize: bool = False,
+    source: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """Index multiple files with batched embedding (one API call for all chunks).
 
@@ -43,21 +50,26 @@ async def add_batch(
         List of document IDs in the same order as ``paths``.
     """
     return await Mentat.get_instance().add_batch(
-        paths, force=force, summarize=summarize
+        paths, force=force, summarize=summarize, source=source, metadata=metadata
     )
 
 
 async def search(
-    query: str, top_k: int = 5, hybrid: bool = False, toc_only: bool = False
+    query: str,
+    top_k: int = 5,
+    hybrid: bool = False,
+    toc_only: bool = False,
+    source: Optional[str] = None,
 ) -> List[MentatResult]:
     """Search for relevant content.
 
     Args:
         toc_only: If True, return document-level ToC summaries instead of
             full chunk content (step 1 of two-step retrieval protocol).
+        source: Filter by source tag (exact or glob, e.g. "composio:*").
     """
     return await Mentat.get_instance().search(
-        query, top_k=top_k, hybrid=hybrid, toc_only=toc_only
+        query, top_k=top_k, hybrid=hybrid, toc_only=toc_only, source=source
     )
 
 

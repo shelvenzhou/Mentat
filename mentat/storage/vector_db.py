@@ -11,6 +11,8 @@ STUBS_SCHEMA = pa.schema(
         pa.field("brief_intro", pa.string()),
         pa.field("instruction", pa.string()),
         pa.field("probe_json", pa.string()),  # Full ProbeResult as JSON
+        pa.field("source", pa.string()),  # Origin tag, e.g. "web_fetch", "composio:gmail"
+        pa.field("metadata_json", pa.string()),  # Arbitrary JSON metadata from caller
     ]
 )
 
@@ -34,18 +36,18 @@ class LanceDBStorage:
     def _table_names(self) -> Set[str]:
         """Return existing table names as a set of strings.
 
-        Handles both new (``list_tables`` → List[TableInfo]) and old
-        (``table_names`` → List[str]) lancedb APIs.
+        Handles both new (``list_tables`` → ``ListTablesResponse``) and old
+        (``table_names`` → ``List[str]``) lancedb APIs.
         """
         try:
             raw = self.db.list_tables()
+            # New API: ListTablesResponse with a .tables attribute
+            if hasattr(raw, "tables"):
+                return set(raw.tables)
+            # Fallback: older versions may return a plain list
+            return {item if isinstance(item, str) else getattr(item, "name", str(item)) for item in raw}
         except AttributeError:
-            raw = self.db.table_names()  # type: ignore[attr-defined]
-        # Normalise: entries may be strings or objects with a .name attr
-        names: Set[str] = set()
-        for item in raw:
-            names.add(item if isinstance(item, str) else str(item))
-        return names
+            return set(self.db.table_names())  # type: ignore[attr-defined]
 
     @property
     def chunks_table(self):
@@ -94,6 +96,8 @@ class LanceDBStorage:
         brief_intro: str,
         instruction: str,
         probe_json: str,
+        source: str = "",
+        metadata_json: str = "{}",
     ):
         """Store document-level metadata."""
         data = [
@@ -103,6 +107,8 @@ class LanceDBStorage:
                 "brief_intro": brief_intro,
                 "instruction": instruction,
                 "probe_json": probe_json,
+                "source": source,
+                "metadata_json": metadata_json,
             }
         ]
         self.stubs_table.add(data)
@@ -113,6 +119,32 @@ class LanceDBStorage:
         if res:
             return res[0]
         return None
+
+    def get_doc_ids_by_source(self, source: str) -> List[str]:
+        """Return doc IDs matching a source pattern.
+
+        Supports exact match and prefix glob (e.g. "composio:*" matches
+        "composio:gmail", "composio:notion", etc.).
+        """
+        try:
+            if source.endswith("*"):
+                prefix = source[:-1]
+                rows = (
+                    self.stubs_table.search()
+                    .where(f"source >= '{prefix}' AND source < '{prefix}~'")
+                    .limit(10000)
+                    .to_list()
+                )
+            else:
+                rows = (
+                    self.stubs_table.search()
+                    .where(f"source = '{source}'")
+                    .limit(10000)
+                    .to_list()
+                )
+            return [r["id"] for r in rows]
+        except Exception:
+            return []
 
     def has_chunks(self, doc_id: str) -> bool:
         """Check if a document has chunks stored.

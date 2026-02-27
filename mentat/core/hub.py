@@ -48,6 +48,8 @@ class MentatResult(BaseModel):
     instructions: str = ""
     score: float = 0.0
     toc_entries: List[dict] = []  # Populated in toc_only search mode
+    source: str = ""  # Origin tag, e.g. "web_fetch", "composio:gmail"
+    metadata: Dict[str, Any] = {}  # Arbitrary metadata from caller
 
 
 @dataclass
@@ -227,6 +229,8 @@ class Mentat:
         summarize: bool = False,
         use_llm_instructions: bool = False,
         wait: bool = False,
+        source: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Index a file with async background processing.
 
@@ -248,6 +252,8 @@ class Mentat:
             summarize: Enable LLM-based chunk summarization (default: False, lazy)
             use_llm_instructions: Use LLM for instruction generation (default: False, template-based)
             wait: Wait for background processing to complete before returning (default: False)
+            source: Origin tag for content provenance (e.g. "web_fetch", "composio:gmail")
+            metadata: Arbitrary key-value metadata to store alongside the document
 
         Returns:
             Document ID. ToC is available immediately; full chunks available after background processing.
@@ -308,6 +314,8 @@ class Mentat:
             brief_intro=brief_intro,
             instruction=instructions,
             probe_json=json.dumps(probe_result.model_dump(), default=str),
+            source=source,
+            metadata_json=json.dumps(metadata or {}, default=str),
         )
         self.logger.info(f"Stored stub for {filename}")
 
@@ -326,7 +334,12 @@ class Mentat:
         # Adaptor hooks (called immediately, before chunks are processed)
         for adaptor in self._adaptors:
             adaptor.on_document_indexed(
-                doc_id, {"filename": filename, "brief_intro": brief_intro}
+                doc_id, {
+                    "filename": filename,
+                    "brief_intro": brief_intro,
+                    "source": source,
+                    "metadata": metadata or {},
+                }
             )
 
         # ── Inline processing (wait=True) or queue (wait=False) ───────
@@ -401,6 +414,8 @@ class Mentat:
         paths: List[str],
         force: bool = False,
         summarize: bool = False,
+        source: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         """Index multiple files efficiently with batched embedding.
 
@@ -412,6 +427,8 @@ class Mentat:
             paths: List of file paths to index.
             force: Re-index even if cached.
             summarize: Enable LLM-based chunk summarization.
+            source: Origin tag for content provenance (e.g. "web_fetch", "composio:gmail").
+            metadata: Arbitrary key-value metadata to store alongside documents.
 
         Returns:
             List of document IDs in the same order as ``paths``.
@@ -460,6 +477,8 @@ class Mentat:
                 brief_intro=brief_intro,
                 instruction=instructions,
                 probe_json=json.dumps(probe_result.model_dump(), default=str),
+                source=source,
+                metadata_json=json.dumps(metadata or {}, default=str),
             )
             self.file_store.save(path, doc_id)
             self.cache.put(path, doc_id)
@@ -621,6 +640,7 @@ class Mentat:
         hybrid: bool = False,
         doc_ids: Optional[List[str]] = None,
         toc_only: bool = False,
+        source: Optional[str] = None,
     ) -> List[MentatResult]:
         """Search for relevant chunks and return results with instructions.
 
@@ -632,10 +652,26 @@ class Mentat:
             toc_only: If True, return one result per document with ToC entries
                 and matched section names instead of full chunk content.
                 This is step 1 of the two-step retrieval protocol.
+            source: Filter results by source tag. Supports glob suffix
+                (e.g. "composio:*" matches all Composio sources).
         """
         # Transform query via adaptors
         for adaptor in self._adaptors:
             query = adaptor.transform_query(query)
+
+        # Source filtering: resolve matching doc_ids and merge with explicit doc_ids
+        if source:
+            source_doc_ids = self.storage.get_doc_ids_by_source(source)
+            if not source_doc_ids:
+                return []
+            if doc_ids is not None:
+                # Intersect: both explicit doc_ids and source filter must match
+                allowed = set(source_doc_ids)
+                doc_ids = [d for d in doc_ids if d in allowed]
+                if not doc_ids:
+                    return []
+            else:
+                doc_ids = source_doc_ids
 
         query_vector = await self.embeddings.embed(query)
         raw_results = self.storage.search(
@@ -676,6 +712,15 @@ class Mentat:
                     elif status_val == "processing":
                         instructions += "\n\n🔄 [Processing: This document is currently being indexed and will be fully available shortly]"
 
+            # Parse metadata from stub
+            stub_metadata: Dict[str, Any] = {}
+            stub_metadata_json = stub.get("metadata_json", "")
+            if stub_metadata_json and stub_metadata_json != "{}":
+                try:
+                    stub_metadata = json.loads(stub_metadata_json)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
             results.append(
                 MentatResult(
                     doc_id=doc_id,
@@ -687,6 +732,8 @@ class Mentat:
                     brief_intro=stub.get("brief_intro", ""),
                     instructions=instructions,
                     score=r.get("_distance", 0.0),
+                    source=stub.get("source", ""),
+                    metadata=stub_metadata,
                 )
             )
 
@@ -751,6 +798,15 @@ class Mentat:
                 elif status_val == "processing":
                     instructions += "\n\n🔄 [Processing: This document is currently being indexed and will be fully available shortly]"
 
+            # Parse metadata from stub
+            stub_metadata: Dict[str, Any] = {}
+            stub_metadata_json = stub.get("metadata_json", "")
+            if stub_metadata_json and stub_metadata_json != "{}":
+                try:
+                    stub_metadata = json.loads(stub_metadata_json)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
             results.append(
                 MentatResult(
                     doc_id=doc_id,
@@ -763,6 +819,8 @@ class Mentat:
                     instructions=instructions,
                     score=group["best_score"],
                     toc_entries=toc_entries,
+                    source=stub.get("source", ""),
+                    metadata=stub_metadata,
                 )
             )
 
@@ -775,11 +833,22 @@ class Mentat:
         if not stub:
             return None
 
+        # Parse metadata
+        stub_metadata: Dict[str, Any] = {}
+        stub_metadata_json = stub.get("metadata_json", "")
+        if stub_metadata_json and stub_metadata_json != "{}":
+            try:
+                stub_metadata = json.loads(stub_metadata_json)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         result: Dict[str, Any] = {
             "doc_id": doc_id,
             "filename": stub.get("filename"),
             "brief_intro": stub.get("brief_intro"),
             "instruction": stub.get("instruction"),
+            "source": stub.get("source", ""),
+            "metadata": stub_metadata,
         }
 
         # Parse probe JSON if available
@@ -909,6 +978,8 @@ class Mentat:
         force: bool = False,
         summarize: bool = False,
         wait: bool = False,
+        source: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Index raw content without requiring a file on disk.
 
@@ -923,6 +994,8 @@ class Mentat:
             force: Re-index even if content hash matches an existing document.
             summarize: Enable LLM-based chunk summarization.
             wait: Block until background processing completes.
+            source: Origin tag for content provenance (e.g. "web_fetch", "composio:gmail").
+            metadata: Arbitrary key-value metadata to store alongside the document.
 
         Returns:
             Document ID.
@@ -952,6 +1025,8 @@ class Mentat:
                 force=force,
                 summarize=summarize,
                 wait=wait,
+                source=source,
+                metadata=metadata,
             )
             # Also store under the content hash for future dedup
             self.cache.put_hash(content_hash, doc_id)
@@ -1243,6 +1318,8 @@ class Collection:
         force: bool = False,
         summarize: bool = False,
         use_llm_instructions: bool = False,
+        source: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Index a file (if needed) and add it to this collection.
 
@@ -1254,6 +1331,8 @@ class Collection:
             force=force,
             summarize=summarize,
             use_llm_instructions=use_llm_instructions,
+            source=source,
+            metadata=metadata,
         )
         self._store.add_doc(self.name, doc_id)
         return doc_id

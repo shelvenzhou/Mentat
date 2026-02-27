@@ -23,13 +23,16 @@ class FakeStorage:
         self._stubs = {}
         self._chunks = []
 
-    def add_stub(self, doc_id, filename, brief_intro, instruction, probe_json):
+    def add_stub(self, doc_id, filename, brief_intro, instruction, probe_json,
+                 source="", metadata_json="{}"):
         self._stubs[doc_id] = {
             "id": doc_id,
             "filename": filename,
             "brief_intro": brief_intro,
             "instruction": instruction,
             "probe_json": probe_json,
+            "source": source,
+            "metadata_json": metadata_json,
         }
 
     def get_stub(self, doc_id):
@@ -78,6 +81,17 @@ class FakeStorage:
 
     def list_docs(self):
         return list(self._stubs.values())
+
+    def get_doc_ids_by_source(self, source):
+        results = []
+        for doc_id, stub in self._stubs.items():
+            s = stub.get("source", "")
+            if source.endswith("*"):
+                if s.startswith(source[:-1]):
+                    results.append(doc_id)
+            elif s == source:
+                results.append(doc_id)
+        return results
 
 
 @pytest.fixture

@@ -156,3 +156,59 @@ class TestChunks:
         docs = db.list_docs()
         filenames = {d["filename"] for d in docs}
         assert filenames == {"a.pdf", "b.csv"}
+
+
+class TestSourceMetadata:
+    """Tests for the source and metadata_json fields on stubs."""
+
+    def test_add_stub_with_source(self, db):
+        db.add_stub("d1", "page.html", "intro", "", "{}", source="web_fetch")
+        stub = db.get_stub("d1")
+        assert stub is not None
+        assert stub["source"] == "web_fetch"
+
+    def test_add_stub_with_metadata(self, db):
+        meta = '{"url": "https://example.com", "title": "Example"}'
+        db.add_stub("d1", "page.html", "intro", "", "{}", metadata_json=meta)
+        stub = db.get_stub("d1")
+        assert stub is not None
+        assert stub["metadata_json"] == meta
+
+    def test_add_stub_defaults(self, db):
+        """source and metadata_json default to empty when not provided."""
+        db.add_stub("d1", "file.txt", "intro", "", "{}")
+        stub = db.get_stub("d1")
+        assert stub["source"] == ""
+        assert stub["metadata_json"] == "{}"
+
+    def test_get_doc_ids_by_source_exact(self, db):
+        db.add_stub("d1", "a.html", "", "", "{}", source="web_fetch")
+        db.add_stub("d2", "b.html", "", "", "{}", source="browser")
+        db.add_stub("d3", "c.html", "", "", "{}", source="web_fetch")
+
+        ids = db.get_doc_ids_by_source("web_fetch")
+        assert set(ids) == {"d1", "d3"}
+
+    def test_get_doc_ids_by_source_glob(self, db):
+        db.add_stub("d1", "email.txt", "", "", "{}", source="composio:gmail")
+        db.add_stub("d2", "page.txt", "", "", "{}", source="composio:notion")
+        db.add_stub("d3", "file.txt", "", "", "{}", source="read")
+
+        ids = db.get_doc_ids_by_source("composio:*")
+        assert set(ids) == {"d1", "d2"}
+
+    def test_get_doc_ids_by_source_no_match(self, db):
+        db.add_stub("d1", "a.html", "", "", "{}", source="web_fetch")
+        ids = db.get_doc_ids_by_source("browser")
+        assert ids == []
+
+    def test_get_doc_ids_by_source_empty(self, db):
+        """No stubs at all."""
+        ids = db.get_doc_ids_by_source("web_fetch")
+        assert ids == []
+
+    def test_list_docs_includes_source(self, db):
+        db.add_stub("d1", "a.pdf", "intro", "", "{}", source="upload")
+        docs = db.list_docs()
+        assert len(docs) == 1
+        assert docs[0]["source"] == "upload"
