@@ -231,6 +231,7 @@ class Mentat:
         wait: bool = False,
         source: str = "",
         metadata: Optional[Dict[str, Any]] = None,
+        _logical_filename: Optional[str] = None,
     ) -> str:
         """Index a file with async background processing.
 
@@ -273,8 +274,8 @@ class Mentat:
                 return cached_id
 
         doc_id = str(uuid.uuid4())
-        filename = Path(path).name
-        self.logger.info(f"Adding file: {path} (ID: {doc_id})")
+        filename = _logical_filename or Path(path).name
+        self.logger.info(f"Adding file: {path} (ID: {doc_id}, filename: {filename})")
 
         # Layer 2: Probe — extract skeleton (no LLM, fast ~1s)
         with Telemetry.time_it(doc_id, "probe"):
@@ -987,9 +988,14 @@ class Mentat:
         delegates to the standard ``add()`` pipeline.  The content hash
         is computed from the string itself for deduplication.
 
+        The caller-provided ``filename`` is preserved as the logical
+        filename in storage (overriding the temp file name), so search
+        results show meaningful names like "README.md" instead of hashes.
+
         Args:
             content: Raw text content to index.
-            filename: Logical filename (used for probe format detection).
+            filename: Logical filename (used for probe format detection AND
+                stored as the display name in search results).
             content_type: MIME type hint (currently unused, reserved).
             force: Re-index even if content hash matches an existing document.
             summarize: Enable LLM-based chunk summarization.
@@ -1011,8 +1017,15 @@ class Mentat:
                 self.logger.info(f"Content cache hit for {filename} -> {cached_id}")
                 return cached_id
 
-        # Write content to a temp file so probes can read it
-        suffix = Path(filename).suffix or ".txt"
+        # Write content to a temp file so probes can read it.
+        # Validate the suffix against registered probes; fall back to .md
+        # (markdown probe handles plain text well) if no probe recognises it.
+        from mentat.probes import get_probe
+
+        suffix = Path(filename).suffix or ".md"
+        if not get_probe(f"_probe_check{suffix}"):
+            suffix = ".md"
+
         content_dir = Path(self.config.storage_dir) / "_content"
         content_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1027,6 +1040,7 @@ class Mentat:
                 wait=wait,
                 source=source,
                 metadata=metadata,
+                _logical_filename=filename,
             )
             # Also store under the content hash for future dedup
             self.cache.put_hash(content_hash, doc_id)
