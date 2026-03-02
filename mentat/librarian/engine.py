@@ -229,6 +229,42 @@ class Librarian:
         return result
 
     # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _enrich_brief_intro(brief_intro: str, probe_result: ProbeResult) -> str:
+        """Prepend the document's topic title/abstract to brief_intro.
+
+        Probe-generated brief_intro describes the extraction *method* (e.g.
+        "Markdown document analyzed via regex").  For discovery (toc_only
+        search, get_summary), the consumer needs to know what the document
+        is *about*.  This method prepends a content-aware prefix.
+        """
+        topic = probe_result.topic
+        parts = []
+
+        # Add document title
+        if topic.title:
+            parts.append(topic.title)
+
+        # Add first paragraph / abstract if available and different from title
+        if topic.abstract:
+            parts.append(topic.abstract)
+        elif topic.first_paragraph:
+            # Truncate to keep it brief
+            fp = topic.first_paragraph
+            if len(fp) > 150:
+                fp = fp[:147] + "..."
+            parts.append(fp)
+
+        if parts:
+            content_summary = " — ".join(parts)
+            return f"{content_summary}\n\n{brief_intro}"
+
+        return brief_intro
+
+    # ------------------------------------------------------------------
     # Phase 2: Template-based instruction generation (no LLM)
     # ------------------------------------------------------------------
 
@@ -244,7 +280,11 @@ class Librarian:
         # Check for probe-generated instructions first
         if probe_result.brief_intro and probe_result.instructions:
             logger.debug(f"Using probe-generated instructions for {probe_result.filename}")
-            return probe_result.brief_intro, probe_result.instructions
+            brief_intro = probe_result.brief_intro
+            # Enrich brief_intro with the document's actual topic/title
+            # so it's useful for discovery, not just a probe method description
+            brief_intro = self._enrich_brief_intro(brief_intro, probe_result)
+            return brief_intro, probe_result.instructions
 
         # Fallback to generic template generation
         logger.debug(f"Using fallback template generation for {probe_result.filename}")

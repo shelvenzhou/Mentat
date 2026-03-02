@@ -118,11 +118,13 @@ class MarkdownProbe(BaseProbe):
 
         if is_small or is_fragmented:
             stats["is_full_content"] = True
-            # Minimal ToC (no preview/annotation needed — full text is provided)
-            toc_entries = [
-                TocEntry(level=len(m.group(1)), title=m.group(2).strip())
-                for m in header_matches
-            ]
+            # Build enhanced ToC even for small files — preview/annotation
+            # are valuable for toc_only search and get_summary, where the
+            # full content is NOT returned.
+            if header_matches:
+                toc_entries, _ = self._build_enhanced_toc(content, header_matches)
+            else:
+                toc_entries = []
             result = ProbeResult(
                 filename=Path(file_path).name,
                 file_type="markdown",
