@@ -1,8 +1,7 @@
 """Skill Integration Layer for agent tool use.
 
 Exports OpenAI function calling tool schemas and a system prompt fragment
-that teaches agents the two-step retrieval protocol for using Mentat as
-a memory system.
+that teaches agents how to use Mentat as a memory system.
 
 Usage:
     from mentat.skill import get_tool_schemas, get_system_prompt, export_skill
@@ -18,45 +17,44 @@ from typing import Any, Dict, List
 SYSTEM_PROMPT = """\
 ## Memory System (Mentat)
 
-You have access to a structured memory system for retrieving information from \
-indexed documents. Use the two-step retrieval protocol:
+You have access to a structured memory system for storing and retrieving \
+information from indexed documents. The preferred approach is the two-step \
+retrieval protocol, which is significantly more token-efficient than \
+traditional RAG.
 
-### Step 1: Discover (search_memory)
-Search for relevant documents using `search_memory` with `toc_only=true`. \
-This returns document summaries and tables of contents -- NOT full content. \
-Use this to understand what information is available and where it lives.
+### Two-Step Retrieval Protocol (Preferred)
 
-### Step 2: Read (read_segment)
-Once you identify a relevant section from Step 1, use `read_segment` with \
-the doc_id and section name to retrieve the actual content. This is \
-token-efficient: you only read what you need. Parent sections automatically \
-include all child sections' content.
+**Step 1 — Discover**: Use `search_memory` with `toc_only=true` to find \
+relevant documents. This returns doc_ids and matched section names — NOT \
+full content. Then call `get_doc_meta(doc_id)` to see the document's brief \
+intro, table of contents, and reading instructions.
 
-### Other Tools
-- `index_memory`: Add files (via path) or raw content (via content+filename)
-- `memory_status`: Check if a document has finished processing
-- `get_summary`: Get a document overview (lightweight by default; use \
-`sections` for specific sections or `full=true` for everything)
-- `get_doc_meta`: Get document metadata (brief_intro, instructions, ToC, \
-source, status) by doc_id. Useful after search with `with_metadata=false` \
-to retrieve metadata for a specific document on demand.
-- `get_section_heat`: Query which sections are most accessed. Returns \
-sections ranked by decayed importance score. Use to understand what \
-content is most relevant, or to prioritize re-reading hot sections.
+**Step 2 — Read**: Use `read_segment(doc_id, section_path)` to fetch the \
+specific section you need. Section names come from get_doc_meta's ToC. \
+Parent sections automatically include all child sections' content. You \
+only read what you need — typically saving 80-90% of tokens vs full RAG.
+
+### Standard RAG Search (Simple Alternative)
+
+For quick, straightforward queries where you just need an answer, use \
+`search_memory` without `toc_only`. This returns matching chunks with \
+full content and summaries directly — like traditional RAG.
+
+Set `grouped=true` to group results by document (each document appears \
+once with all matching chunks nested), which avoids duplicate metadata.
+
+### Indexing
+
+Use `index_memory` to add files or raw content to the memory system. \
+Processing happens in the background; use `memory_status` to check progress.
 
 ### Guidelines
-- Always search before reading -- do not guess section names
-- Prefer toc_only search to minimize token usage
-- For subsequent searches on known documents, the `with_metadata` flag \
-defaults to false to save tokens; set it to true if you need brief_intro \
-and instructions again
-- Section names from search results can be used directly in read_segment
-- Documents may be processing in the background; check status if chunks are empty
-- The system tracks section access heat automatically: read_segment (weight 3), \
-inspect (weight 2), and search (weight 1) all contribute to importance scores \
-with 24-hour exponential decay
-- Use `get_section_heat` to discover the hottest sections across documents
-- Use the `source` parameter to scope searches (e.g. "composio:gmail", "web_fetch", "browser")
+- Prefer two-step retrieval for complex or multi-document queries
+- Use standard RAG search for simple, direct questions
+- Section names from get_doc_meta can be used directly in read_segment
+- Documents may be processing in the background; check status if results seem incomplete
+- Use the `source` parameter to filter searches by origin (e.g. "composio:gmail", "web_fetch")
+- Use `collection` to scope searches to specific document groups
 """
 
 
@@ -66,10 +64,10 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "function": {
             "name": "search_memory",
             "description": (
-                "Search indexed documents for relevant content. "
-                "Use toc_only=true for the discovery step (returns document "
-                "summaries and matched sections, not full content). "
-                "Use toc_only=false to get full chunk content."
+                "Search indexed documents. With toc_only=true, returns "
+                "doc_ids and matched section names for two-step retrieval "
+                "(use with get_doc_meta + read_segment). Without toc_only, "
+                "returns full chunk content like standard RAG."
             ),
             "parameters": {
                 "type": "object",
@@ -86,11 +84,28 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                     "toc_only": {
                         "type": "boolean",
                         "description": (
-                            "If true, return only document summaries and "
-                            "matched section names (step 1 of two-step "
-                            "protocol). If false, return full chunk content."
+                            "If true, return only doc_ids and matched section "
+                            "names (step 1 of two-step protocol). "
+                            "If false, return full chunk content (standard RAG)."
                         ),
-                        "default": True,
+                        "default": False,
+                    },
+                    "grouped": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, group results by document — each document "
+                            "appears once with all matching chunks nested. "
+                            "More token-efficient for multi-document queries."
+                        ),
+                        "default": False,
+                    },
+                    "hybrid": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, combine vector similarity with keyword "
+                            "matching for better recall on exact terms."
+                        ),
+                        "default": False,
                     },
                     "collection": {
                         "type": "string",
@@ -99,18 +114,9 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                     "source": {
                         "type": "string",
                         "description": (
-                            "Filter by content source. Exact match or glob "
-                            "prefix (e.g. 'web_fetch', 'composio:*', "
-                            "'composio:gmail'). Omit to search all sources."
-                        ),
-                    },
-                    "with_metadata": {
-                        "type": "boolean",
-                        "description": (
-                            "Include brief_intro, instructions, and toc_entries "
-                            "in results. Defaults to true when toc_only=true "
-                            "(discovery needs metadata), false when toc_only=false "
-                            "(saves tokens when you already know the documents)."
+                            "Filter by content source (e.g. 'web_fetch', "
+                            "'composio:*', 'composio:gmail'). "
+                            "Omit to search all sources."
                         ),
                     },
                 },
@@ -121,11 +127,33 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_doc_meta",
+            "description": (
+                "Get a document's metadata: brief intro, table of contents, "
+                "instructions, source, and processing status. Use after "
+                "search to understand a document's structure and find section "
+                "names for read_segment (step 1b of two-step protocol)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "doc_id": {
+                        "type": "string",
+                        "description": "Document ID from search results",
+                    },
+                },
+                "required": ["doc_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_segment",
             "description": (
-                "Read a specific section from an indexed document (step 2 of "
-                "two-step protocol). Use doc_id and section name from "
-                "search_memory results. Parent sections automatically "
+                "Read a specific section from an indexed document (step 2 "
+                "of two-step protocol). Use doc_id from search and section "
+                "name from get_doc_meta's ToC. Parent sections automatically "
                 "include all child sections' content."
             ),
             "parameters": {
@@ -139,8 +167,7 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                         "type": "string",
                         "description": (
                             "Section name to read (case-insensitive match). "
-                            "Use the section names returned by search_memory. "
-                            "Parent sections automatically include child content."
+                            "Use section names from get_doc_meta's ToC."
                         ),
                     },
                     "include_summary": {
@@ -156,50 +183,12 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "get_summary",
-            "description": (
-                "Get the structured overview of an indexed document. "
-                "Returns lightweight data (ToC + brief intro) by default. "
-                "Use 'sections' to get chunk summaries for specific sections, "
-                "or 'full' to get everything including the full probe data."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "doc_id": {
-                        "type": "string",
-                        "description": "Document ID to inspect",
-                    },
-                    "sections": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "Optional list of section names to include "
-                            "chunk summaries for (case-insensitive match)"
-                        ),
-                    },
-                    "full": {
-                        "type": "boolean",
-                        "description": (
-                            "If true, return all probe data, chunks, and "
-                            "summaries. Default false (lightweight ToC + intro)."
-                        ),
-                        "default": False,
-                    },
-                },
-                "required": ["doc_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "index_memory",
             "description": (
-                "Index a file or raw text content into the memory system for "
-                "future retrieval. Provide either 'path' (file on disk) or "
-                "both 'content' and 'filename' (raw text). "
-                "Returns immediately; processing happens in the background."
+                "Index a file or raw text content into the memory system. "
+                "Provide either 'path' (file on disk) or both 'content' "
+                "and 'filename' (raw text). Returns immediately; processing "
+                "happens in the background."
             ),
             "parameters": {
                 "type": "object",
@@ -222,18 +211,21 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                             "detection and display (required when using content)"
                         ),
                     },
+                    "content_type": {
+                        "type": "string",
+                        "description": (
+                            "MIME type hint for raw content (e.g. 'text/html', "
+                            "'text/markdown'). Only used with content+filename."
+                        ),
+                        "default": "text/plain",
+                    },
                     "collection": {
                         "type": "string",
                         "description": "Optional collection name to organize documents",
                     },
-                    "wait": {
-                        "type": "boolean",
-                        "description": "Wait for processing to complete before returning",
-                        "default": False,
-                    },
                     "source": {
                         "type": "string",
-                        "description": "Origin tag for provenance tracking (e.g. 'upload', 'workspace')",
+                        "description": "Origin tag for provenance tracking (e.g. 'upload', 'web_fetch')",
                     },
                     "metadata": {
                         "type": "object",
@@ -264,58 +256,6 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_doc_meta",
-            "description": (
-                "Get lightweight metadata for a document by ID. "
-                "Returns brief_intro, instructions, table of contents, "
-                "source, metadata, and processing status. "
-                "Use after search to get document context without re-fetching."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "doc_id": {
-                        "type": "string",
-                        "description": "Document ID from search results",
-                    },
-                },
-                "required": ["doc_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_section_heat",
-            "description": (
-                "Query which document sections are most accessed. Returns "
-                "sections ranked by importance score (with exponential time "
-                "decay). Optionally filter by doc_id. Use to discover hot "
-                "sections or prioritize re-reading frequently accessed content."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "doc_id": {
-                        "type": "string",
-                        "description": (
-                            "Optional document ID to filter results. "
-                            "Omit to get hottest sections across all documents."
-                        ),
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of sections to return (default: 20)",
-                        "default": 20,
-                    },
-                },
-                "required": [],
-            },
-        },
-    },
 ]
 
 
@@ -325,7 +265,7 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
 
 
 def get_system_prompt() -> str:
-    """Return the system prompt fragment teaching the two-step protocol."""
+    """Return the system prompt fragment teaching the retrieval protocol."""
     return SYSTEM_PROMPT
 
 
@@ -342,6 +282,6 @@ def export_skill() -> Dict[str, Any]:
     return {
         "tools": TOOL_SCHEMAS,
         "system_prompt": SYSTEM_PROMPT,
-        "version": "1.0",
+        "version": "2.0",
         "protocol": "two-step-retrieval",
     }

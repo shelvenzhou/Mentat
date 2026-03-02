@@ -6,17 +6,15 @@ from mentat.skill import get_tool_schemas, get_system_prompt, export_skill
 def test_tool_schemas_structure():
     schemas = get_tool_schemas()
     assert isinstance(schemas, list)
-    assert len(schemas) == 7
+    assert len(schemas) == 5
 
     names = {s["function"]["name"] for s in schemas}
     assert names == {
         "search_memory",
+        "get_doc_meta",
         "read_segment",
-        "get_summary",
         "index_memory",
         "memory_status",
-        "get_doc_meta",
-        "get_section_heat",
     }
 
 
@@ -40,9 +38,10 @@ def test_system_prompt_content():
     prompt = get_system_prompt()
     assert isinstance(prompt, str)
     assert len(prompt) > 100
-    assert "two-step" in prompt.lower() or "two-step" in prompt
+    assert "two-step" in prompt.lower() or "Two-Step" in prompt
     assert "search_memory" in prompt
     assert "read_segment" in prompt
+    assert "get_doc_meta" in prompt
     assert "index_memory" in prompt
 
 
@@ -52,9 +51,9 @@ def test_export_skill_complete():
     assert "system_prompt" in skill
     assert "version" in skill
     assert "protocol" in skill
-    assert len(skill["tools"]) == 7
+    assert len(skill["tools"]) == 5
     assert isinstance(skill["system_prompt"], str)
-    assert skill["version"] == "1.0"
+    assert skill["version"] == "2.0"
     assert skill["protocol"] == "two-step-retrieval"
 
 
@@ -64,6 +63,22 @@ def test_search_memory_schema_has_toc_only():
     props = search_schema["function"]["parameters"]["properties"]
     assert "toc_only" in props
     assert props["toc_only"]["type"] == "boolean"
+
+
+def test_search_memory_schema_has_grouped():
+    schemas = get_tool_schemas()
+    search_schema = next(s for s in schemas if s["function"]["name"] == "search_memory")
+    props = search_schema["function"]["parameters"]["properties"]
+    assert "grouped" in props
+    assert props["grouped"]["type"] == "boolean"
+
+
+def test_search_memory_schema_has_hybrid():
+    schemas = get_tool_schemas()
+    search_schema = next(s for s in schemas if s["function"]["name"] == "search_memory")
+    props = search_schema["function"]["parameters"]["properties"]
+    assert "hybrid" in props
+    assert props["hybrid"]["type"] == "boolean"
 
 
 def test_get_doc_meta_schema():
@@ -86,17 +101,16 @@ def test_read_segment_schema_requires_doc_id_and_section():
     assert "section_path" in required
 
 
-def test_get_section_heat_schema():
+def test_index_memory_schema_has_content_type():
     schemas = get_tool_schemas()
-    heat_schema = next(s for s in schemas if s["function"]["name"] == "get_section_heat")
-    props = heat_schema["function"]["parameters"]["properties"]
-    assert "doc_id" in props
-    assert "limit" in props
-    # No required params — both are optional
-    assert heat_schema["function"]["parameters"]["required"] == []
+    index_schema = next(s for s in schemas if s["function"]["name"] == "index_memory")
+    props = index_schema["function"]["parameters"]["properties"]
+    assert "content_type" in props
 
 
-def test_system_prompt_mentions_section_heat():
+def test_system_prompt_two_step_first():
+    """Two-step protocol should be presented before standard RAG."""
     prompt = get_system_prompt()
-    assert "get_section_heat" in prompt
-    assert "heat" in prompt.lower()
+    two_step_pos = prompt.lower().find("two-step")
+    standard_pos = prompt.lower().find("standard rag")
+    assert two_step_pos < standard_pos, "Two-step protocol should appear before standard RAG"
