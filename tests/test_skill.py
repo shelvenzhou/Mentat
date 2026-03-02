@@ -6,7 +6,7 @@ from mentat.skill import get_tool_schemas, get_system_prompt, export_skill
 def test_tool_schemas_structure():
     schemas = get_tool_schemas()
     assert isinstance(schemas, list)
-    assert len(schemas) == 6
+    assert len(schemas) == 7
 
     names = {s["function"]["name"] for s in schemas}
     assert names == {
@@ -16,6 +16,7 @@ def test_tool_schemas_structure():
         "index_memory",
         "memory_status",
         "get_doc_meta",
+        "get_section_heat",
     }
 
 
@@ -51,7 +52,7 @@ def test_export_skill_complete():
     assert "system_prompt" in skill
     assert "version" in skill
     assert "protocol" in skill
-    assert len(skill["tools"]) == 6
+    assert len(skill["tools"]) == 7
     assert isinstance(skill["system_prompt"], str)
     assert skill["version"] == "1.0"
     assert skill["protocol"] == "two-step-retrieval"
@@ -83,3 +84,19 @@ def test_read_segment_schema_requires_doc_id_and_section():
     required = read_schema["function"]["parameters"]["required"]
     assert "doc_id" in required
     assert "section_path" in required
+
+
+def test_get_section_heat_schema():
+    schemas = get_tool_schemas()
+    heat_schema = next(s for s in schemas if s["function"]["name"] == "get_section_heat")
+    props = heat_schema["function"]["parameters"]["properties"]
+    assert "doc_id" in props
+    assert "limit" in props
+    # No required params — both are optional
+    assert heat_schema["function"]["parameters"]["required"] == []
+
+
+def test_system_prompt_mentions_section_heat():
+    prompt = get_system_prompt()
+    assert "get_section_heat" in prompt
+    assert "heat" in prompt.lower()

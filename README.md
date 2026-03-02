@@ -22,7 +22,8 @@ Mentat solves the **"Token Explosion"** problem in traditional RAG. Instead of f
 - **Auto Vector Dimensions**: Embedding dimensions are auto-detected from the model name — no manual configuration needed.
 - **Telemetry**: Built-in tracking of token savings and processing time across probe, summarise, and librarian phases.
 - **⚡ Fast Mode**: Default mode uses template-based instructions and lazy summarization for **19x faster indexing** with near-zero LLM overhead while maintaining semantic fingerprinting benefits.
-- **🚀 Async Processing (NEW)**: Returns immediately (~1-3s) after probe + ToC extraction while embeddings/summarization process in background. Priority boosting automatically processes queried documents first. Perfect for batch indexing and responsive UIs.
+- **🚀 Async Processing**: Returns immediately (~1-3s) after probe + ToC extraction while embeddings/summarization process in background. Priority boosting automatically processes queried documents first. Perfect for batch indexing and responsive UIs.
+- **🔥 Section Heat Tracking**: Automatically tracks which document sections are most accessed across search, inspect, and read_segment operations. Weighted scoring (read_segment > inspect > search) with exponential time decay, parent-to-child propagation, and a query API for hottest sections.
 
 ## Performance
 
@@ -322,6 +323,7 @@ uv run pytest tests/test_queue_perf.py -v    # Queue throughput & latency
 | `test_librarian.py`      | Librarian chunk summarisation, batching, fallback, template generation                |
 | `test_probe_utils.py`    | Token estimation, bypass, preview extraction, truncation, format_size, safe_read_text |
 | `test_access_tracker.py` | Two-layer FIFO tracker: promotion, eviction, callbacks, stats                         |
+| `test_section_heat.py`   | Section heat tracker: weighted scoring, time decay, propagation, persistence           |
 | `test_embeddings.py`     | EmbeddingRegistry, LiteLLMEmbedding batching, truncation, order preservation          |
 | `test_telemetry.py`      | Telemetry time_it, token/savings recording, format_stats output                       |
 | `test_file_store.py`     | LocalFileStore save, get_path, exists, get_size, total_size                           |

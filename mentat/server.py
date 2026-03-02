@@ -346,6 +346,12 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
 
         return export_skill()
 
+    # ── Section Heat ─────────────────────────────────────────────────
+
+    @app.get("/section-heat")
+    async def section_heat(doc_id: Optional[str] = None, limit: int = 20):
+        return {"sections": _mentat().get_section_heat(doc_id=doc_id, limit=limit)}
+
     # ── Stats ────────────────────────────────────────────────────────
 
     @app.get("/stats")

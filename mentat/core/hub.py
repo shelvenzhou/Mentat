@@ -20,6 +20,7 @@ from mentat.core.queue import (
     prepare_embed_texts,
 )
 from mentat.core.access_tracker import AccessTracker
+from mentat.core.section_heat import SectionHeatTracker
 from mentat.probes import get_probe, run_probe
 from mentat.probes.base import ProbeResult
 from mentat.probes._utils import estimate_tokens
@@ -110,6 +111,11 @@ class MentatConfig:
     # Chunk normalization
     chunk_target_tokens: int = 1000
 
+    # Section heat tracking
+    section_heat_half_life: float = 86400.0
+    section_heat_threshold: float = 5.0
+    section_heat_max_entries: int = 1000
+
     def __post_init__(self):
         self.db_path = self.db_path or os.getenv("MENTAT_DB_PATH", "./mentat_db")
         self.storage_dir = self.storage_dir or os.getenv(
@@ -157,6 +163,17 @@ class MentatConfig:
         # Chunk normalization
         self.chunk_target_tokens = int(
             os.getenv("MENTAT_CHUNK_TARGET_TOKENS", str(self.chunk_target_tokens))
+        )
+
+        # Section heat tracking
+        self.section_heat_half_life = float(
+            os.getenv("MENTAT_SECTION_HEAT_HALF_LIFE", str(self.section_heat_half_life))
+        )
+        self.section_heat_threshold = float(
+            os.getenv("MENTAT_SECTION_HEAT_THRESHOLD", str(self.section_heat_threshold))
+        )
+        self.section_heat_max_entries = int(
+            os.getenv("MENTAT_SECTION_HEAT_MAX_ENTRIES", str(self.section_heat_max_entries))
         )
 
 
@@ -272,6 +289,15 @@ class Mentat:
             persist_path=heat_map_path,
         )
 
+        # Section-level heat tracker
+        section_heat_path = str(Path(self.config.db_path) / "section_heat_map.json")
+        self.section_heat = SectionHeatTracker(
+            half_life_seconds=self.config.section_heat_half_life,
+            hot_threshold=self.config.section_heat_threshold,
+            max_entries=self.config.section_heat_max_entries,
+            persist_path=section_heat_path,
+        )
+
         # Background processor (async queue system)
         self.processor = BackgroundProcessor(self, max_concurrent=self.config.max_concurrent_tasks)
 
@@ -307,6 +333,7 @@ class Mentat:
         """
         await self.processor.stop()
         self.access_tracker.save_now()
+        self.section_heat.save_now()
 
     async def add(
         self,
@@ -833,40 +860,54 @@ class Mentat:
 
         # ToC-only mode: group by document, return summaries instead of chunks
         if toc_only:
-            return self._build_toc_results(raw_results, stub_cache, top_k, with_metadata)
+            results = self._build_toc_results(raw_results, stub_cache, top_k, with_metadata)
+        else:
+            # Only check queue status if the processor has pending/processing tasks
+            has_active_tasks = bool(self.processor.queue._tasks)
 
-        # Only check queue status if the processor has pending/processing tasks
-        has_active_tasks = bool(self.processor.queue._tasks)
+            results = []
+            for r in raw_results:
+                doc_id = r.get("doc_id", "")
+                stub = stub_cache.get(doc_id, {})
+                base_instructions = stub.get("instruction", "") if with_metadata else ""
+                status_note = self._get_status_note(doc_id, has_active_tasks)
+                instructions = base_instructions + status_note
 
-        results = []
-        for r in raw_results:
-            doc_id = r.get("doc_id", "")
-            stub = stub_cache.get(doc_id, {})
-            base_instructions = stub.get("instruction", "") if with_metadata else ""
-            status_note = self._get_status_note(doc_id, has_active_tasks)
-            instructions = base_instructions + status_note
-
-            results.append(
-                MentatResult(
-                    doc_id=doc_id,
-                    chunk_id=r.get("chunk_id", ""),
-                    filename=r.get("filename", ""),
-                    section=r.get("section"),
-                    content=r.get("content", ""),
-                    summary=r.get("summary", ""),
-                    brief_intro=stub.get("brief_intro", "") if with_metadata else "",
-                    instructions=instructions,
-                    score=r.get("_distance", 0.0),
-                    source=stub.get("source", ""),
-                    metadata=self._parse_stub_metadata(stub),
+                results.append(
+                    MentatResult(
+                        doc_id=doc_id,
+                        chunk_id=r.get("chunk_id", ""),
+                        filename=r.get("filename", ""),
+                        section=r.get("section"),
+                        content=r.get("content", ""),
+                        summary=r.get("summary", ""),
+                        brief_intro=stub.get("brief_intro", "") if with_metadata else "",
+                        instructions=instructions,
+                        score=r.get("_distance", 0.0),
+                        source=stub.get("source", ""),
+                        metadata=self._parse_stub_metadata(stub),
+                    )
                 )
-            )
 
-        # Adaptor hooks (skip serialization if no adaptors)
-        if self._adaptors:
-            result_dicts = [r.model_dump() for r in results]
-            for adaptor in self._adaptors:
-                result_dicts = adaptor.on_search_results(query, result_dicts)
+            # Adaptor hooks (skip serialization if no adaptors)
+            if self._adaptors:
+                result_dicts = [r.model_dump() for r in results]
+                for adaptor in self._adaptors:
+                    result_dicts = adaptor.on_search_results(query, result_dicts)
+
+        # Track section heat from search results (weight 1.0)
+        _heat_by_doc: Dict[str, set] = {}
+        for r in results:
+            if r.section and r.doc_id:
+                # toc_only mode joins sections with ", "
+                for s in r.section.split(", "):
+                    s = s.strip()
+                    if s:
+                        _heat_by_doc.setdefault(r.doc_id, set()).add(s)
+        for did, secs in _heat_by_doc.items():
+            asyncio.create_task(
+                self.section_heat.record_sections(did, secs, weight=1.0)
+            )
 
         return results
 
@@ -958,6 +999,14 @@ class Mentat:
                     chunks=chunk_results,
                 )
             )
+
+        # Track section heat from grouped search results (weight 1.0)
+        for did, group in doc_groups.items():
+            secs = group.get("sections", set())
+            if secs:
+                asyncio.create_task(
+                    self.section_heat.record_sections(did, secs, weight=1.0)
+                )
 
         results.sort(key=lambda r: r.score)
         return results[:top_k]
@@ -1147,6 +1196,11 @@ class Mentat:
                 use_lowered = True
             else:
                 use_lowered = False
+
+            # Track section heat for inspected sections (weight 2.0)
+            asyncio.create_task(
+                self.section_heat.record_sections(doc_id, expanded, weight=2.0)
+            )
 
             chunk_rows = self.storage.get_chunks_by_doc(doc_id)
             if chunk_rows:
@@ -1547,6 +1601,12 @@ class Mentat:
         # Resolve parent section to include children via ToC hierarchy
         expanded_sections = _resolve_child_sections(toc_entries, section_path)
 
+        # Track section heat with parent→child propagation (weight 3.0)
+        sections_to_track = expanded_sections if expanded_sections else {section_path}
+        asyncio.create_task(
+            self.section_heat.record_sections(doc_id, sections_to_track, weight=3.0)
+        )
+
         # Match chunks by section name
         section_lower = section_path.lower().strip()
         matched_chunks = []
@@ -1633,6 +1693,20 @@ class Mentat:
 
         return result
 
+    def get_section_heat(
+        self,
+        doc_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Return hottest sections, optionally filtered by document.
+
+        Returns list of dicts with doc_id, section, score, access_count, last_access.
+        Sorted by decayed score descending.
+        """
+        if doc_id:
+            return self.section_heat.get_top_sections(doc_id, limit=limit)
+        return self.section_heat.get_hot_sections(limit=limit)
+
     def stats(self) -> Dict[str, Any]:
         """Return system statistics."""
         return {
@@ -1642,6 +1716,7 @@ class Mentat:
             "storage_size_bytes": self.file_store.total_size(),
             "collections": len(self.collections_store.list_collections()),
             "access_tracker": self.access_tracker.stats(),
+            "section_heat": self.section_heat.stats(),
         }
 
 

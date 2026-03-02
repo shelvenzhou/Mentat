@@ -242,6 +242,11 @@ async def read_segment(
     )
 
 
+def get_section_heat(doc_id: Optional[str] = None, limit: int = 20) -> list:
+    """Return hottest sections by decayed score, optionally filtered by doc_id."""
+    return Mentat.get_instance().get_section_heat(doc_id=doc_id, limit=limit)
+
+
 async def track_access(path: str) -> dict:
     """Record a file access event. Frequently accessed files are auto-indexed."""
     return await Mentat.get_instance().track_access(path)
@@ -270,6 +275,7 @@ __all__ = [
     "read_structured",
     "read_segment",
     "track_access",
+    "get_section_heat",
     # Skill integration
     "get_tool_schemas",
     "get_system_prompt",

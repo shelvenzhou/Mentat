@@ -62,13 +62,14 @@ Uses `litellm` for all LLM calls. Takes only `ProbeResult` as input — never re
 ### Other Core Modules
 - `core/embeddings.py` — `LiteLLMEmbedding` provider with batching. Oversized chunks split with 500-char overlap.
 - `core/access_tracker.py` — two-layer FIFO: recent (LRU) → hot (≥2 accesses). Promotion callback triggers on-demand summarization. Persistent heat map via `heat_map.json` (debounced writes, loaded on init).
+- `core/section_heat.py` — `SectionHeatTracker`: section-level importance tracking with weighted scoring (read_segment=3.0, inspect=2.0, search=1.0), exponential time decay (24h half-life), hot threshold, LRU eviction, and JSON persistence (`section_heat_map.json`). Parent→child propagation via ToC hierarchy.
 - `core/telemetry.py` — context-manager timing for probe/summarize/librarian phases, token savings tracking.
 - `adaptors/__init__.py` — `BaseAdaptor` ABC with `on_document_indexed`, `on_search_results`, `transform_query` hooks.
-- `server.py` — FastAPI HTTP server with endpoints for index, search, search-grouped, doc-meta, inspect, status, probe, read-segment, skill, collections, access tracking.
-- `skill.py` — Skill Integration Layer: OpenAI function calling tool schemas (6 tools: search_memory, read_segment, get_summary, index_memory, memory_status, get_doc_meta) + system prompt fragment for agent two-step retrieval protocol. `export_skill()` returns combined payload.
+- `server.py` — FastAPI HTTP server with endpoints for index, search, search-grouped, doc-meta, inspect, status, probe, read-segment, section-heat, skill, collections, access tracking.
+- `skill.py` — Skill Integration Layer: OpenAI function calling tool schemas (7 tools: search_memory, read_segment, get_summary, index_memory, memory_status, get_doc_meta, get_section_heat) + system prompt fragment for agent two-step retrieval protocol. `export_skill()` returns combined payload.
 
 ### Public API (`mentat/__init__.py`)
-Module-level async functions: `add()`, `add_batch()`, `add_content()`, `search()`, `search_grouped()`, `inspect()`, `get_doc_meta()`, `read_structured()`, `read_segment()`, `track_access()`, `start_processor()`, `shutdown()`, `wait_for()`. Sync functions: `probe()`, `stats()`, `collection()`, `collections()`, `get_status()`, `configure()`, `get_tool_schemas()`, `get_system_prompt()`, `export_skill()`. Models: `MentatResult`, `MentatDocResult`, `ChunkResult`.
+Module-level async functions: `add()`, `add_batch()`, `add_content()`, `search()`, `search_grouped()`, `inspect()`, `get_doc_meta()`, `read_structured()`, `read_segment()`, `track_access()`, `start_processor()`, `shutdown()`, `wait_for()`. Sync functions: `probe()`, `stats()`, `get_section_heat()`, `collection()`, `collections()`, `get_status()`, `configure()`, `get_tool_schemas()`, `get_system_prompt()`, `export_skill()`. Models: `MentatResult`, `MentatDocResult`, `ChunkResult`.
 
 ## CLI Commands
 

@@ -40,6 +40,9 @@ include all child sections' content.
 - `get_doc_meta`: Get document metadata (brief_intro, instructions, ToC, \
 source, status) by doc_id. Useful after search with `with_metadata=false` \
 to retrieve metadata for a specific document on demand.
+- `get_section_heat`: Query which sections are most accessed. Returns \
+sections ranked by decayed importance score. Use to understand what \
+content is most relevant, or to prioritize re-reading hot sections.
 
 ### Guidelines
 - Always search before reading -- do not guess section names
@@ -49,7 +52,10 @@ defaults to false to save tokens; set it to true if you need brief_intro \
 and instructions again
 - Section names from search results can be used directly in read_segment
 - Documents may be processing in the background; check status if chunks are empty
-- High-frequency sections are auto-summarized for faster future retrieval
+- The system tracks section access heat automatically: read_segment (weight 3), \
+inspect (weight 2), and search (weight 1) all contribute to importance scores \
+with 24-hour exponential decay
+- Use `get_section_heat` to discover the hottest sections across documents
 - Use the `source` parameter to scope searches (e.g. "composio:gmail", "web_fetch", "browser")
 """
 
@@ -277,6 +283,36 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                     },
                 },
                 "required": ["doc_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_section_heat",
+            "description": (
+                "Query which document sections are most accessed. Returns "
+                "sections ranked by importance score (with exponential time "
+                "decay). Optionally filter by doc_id. Use to discover hot "
+                "sections or prioritize re-reading frequently accessed content."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "doc_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional document ID to filter results. "
+                            "Omit to get hottest sections across all documents."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of sections to return (default: 20)",
+                        "default": 20,
+                    },
+                },
+                "required": [],
             },
         },
     },
