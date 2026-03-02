@@ -32,6 +32,7 @@ class LanceDBStorage:
         self.stubs_table = self._get_or_create_table("stubs", STUBS_SCHEMA)
         # Opened lazily — see _ensure_chunks_table()
         self._chunks_table = None
+        self._indexes_ensured = False
 
     def _table_names(self) -> Set[str]:
         """Return existing table names as a set of strings.
@@ -55,6 +56,7 @@ class LanceDBStorage:
         if self._chunks_table is None:
             if "chunks" in self._table_names():
                 self._chunks_table = self.db.open_table("chunks")
+                self._ensure_indexes()
         return self._chunks_table
 
     def _ensure_chunks_table(self, vector_dim: int):
@@ -177,13 +179,15 @@ class LanceDBStorage:
         """Store multiple chunks with their vectors.
 
         On the first call the chunks table is created with the vector
-        dimension inferred from the data.
+        dimension inferred from the data.  Indexes (FTS + scalar) are
+        ensured once per session after the first batch is written.
         """
         if not chunks:
             return
         vector_dim = len(chunks[0]["vector"])
         self._ensure_chunks_table(vector_dim)
         self.chunks_table.add(chunks)
+        self._ensure_indexes()
 
     def search(
         self,
@@ -223,17 +227,27 @@ class LanceDBStorage:
         except Exception:
             return False
 
+    def _ensure_indexes(self):
+        """Create FTS and scalar indexes if not already ensured this session."""
+        if self._indexes_ensured:
+            return
+        if self._chunks_table is None:
+            return
+        self.create_fts_index()
+        self.ensure_scalar_index()
+        self._indexes_ensured = True
+
     def create_fts_index(self):
         """Create FTS index on chunk content for hybrid search."""
         try:
-            self.chunks_table.create_fts_index("content")
+            self.chunks_table.create_fts_index("content", replace=True)
         except Exception:
             pass  # Index may already exist
 
     def ensure_scalar_index(self):
         """Create scalar index on doc_id for fast collection pre-filtering."""
         try:
-            self.chunks_table.create_index("doc_id", index_type="BTREE")
+            self.chunks_table.create_index("doc_id", index_type="BTREE", replace=True)
         except Exception:
             pass  # Index may already exist
 
