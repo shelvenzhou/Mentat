@@ -142,7 +142,7 @@ async def test_async_summary_produces_summaries(async_mentat, tmp_path):
     doc_id = await async_mentat.add(str(p), force=True, summarize=True, wait=False)
     done = await async_mentat.wait_for_completion(doc_id, timeout=20)
 
-    info = await async_mentat.inspect(doc_id)
+    info = await async_mentat.inspect(doc_id, full=True)
 
     assert done is True
     assert info is not None
@@ -183,7 +183,7 @@ async def test_async_summary_concurrent_docs(async_mentat, tmp_path):
         async_mentat.wait_for_completion(d, timeout=20) for d in doc_ids
     ])
 
-    infos = await asyncio.gather(*[async_mentat.inspect(d) for d in doc_ids])
+    infos = await asyncio.gather(*[async_mentat.inspect(d, full=True) for d in doc_ids])
 
     assert all(done_flags)
     assert all(info is not None for info in infos)

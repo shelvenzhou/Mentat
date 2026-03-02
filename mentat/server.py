@@ -72,7 +72,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 f"source={data.get('source', '')} "
                 f"content={content_len} chars"
             )
-        if path == "/search":
+        if path in ("/search", "/search-grouped"):
             return (
                 f"query={data.get('query')!r} "
                 f"top_k={data.get('top_k', 5)} "
@@ -125,6 +125,7 @@ class SearchRequest(BaseModel):
     collection: Optional[str] = None
     toc_only: bool = False
     source: Optional[str] = None
+    with_metadata: Optional[bool] = None
 
 
 class TrackRequest(BaseModel):
@@ -236,7 +237,21 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
                 hybrid=req.hybrid,
                 toc_only=req.toc_only,
                 source=req.source,
+                with_metadata=req.with_metadata,
             )
+        return {"results": [r.model_dump() for r in results]}
+
+    @app.post("/search-grouped")
+    async def search_grouped(req: SearchRequest):
+        m = _mentat()
+        results = await m.search_grouped(
+            req.query,
+            top_k=req.top_k,
+            hybrid=req.hybrid,
+            toc_only=req.toc_only,
+            source=req.source,
+            with_metadata=req.with_metadata,
+        )
         return {"results": [r.model_dump() for r in results]}
 
     # ── Status / Inspect ─────────────────────────────────────────────
@@ -245,9 +260,17 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
     async def status(doc_id: str):
         return _mentat().get_processing_status(doc_id)
 
+    @app.get("/doc-meta/{doc_id}")
+    async def doc_meta(doc_id: str):
+        result = await _mentat().get_doc_meta(doc_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+        return result
+
     @app.get("/inspect/{doc_id}")
-    async def inspect(doc_id: str):
-        result = await _mentat().inspect(doc_id)
+    async def inspect(doc_id: str, sections: Optional[str] = None, full: bool = False):
+        section_list = [s.strip() for s in sections.split(",") if s.strip()] if sections else None
+        result = await _mentat().inspect(doc_id, sections=section_list, full=full)
         if result is None:
             raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
         return result

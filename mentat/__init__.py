@@ -20,7 +20,7 @@ Usage:
     stats = mentat.stats()
 """
 
-from mentat.core.hub import Mentat, MentatConfig, MentatResult, Collection
+from mentat.core.hub import Mentat, MentatConfig, MentatResult, MentatDocResult, ChunkResult, Collection
 from mentat.probes import run_probe
 from mentat.probes.base import ProbeResult, TopicInfo, StructureInfo, Chunk
 from mentat.skill import get_tool_schemas, get_system_prompt, export_skill
@@ -60,6 +60,7 @@ async def search(
     hybrid: bool = False,
     toc_only: bool = False,
     source: Optional[str] = None,
+    with_metadata: Optional[bool] = None,
 ) -> List[MentatResult]:
     """Search for relevant content.
 
@@ -67,15 +68,26 @@ async def search(
         toc_only: If True, return document-level ToC summaries instead of
             full chunk content (step 1 of two-step retrieval protocol).
         source: Filter by source tag (exact or glob, e.g. "composio:*").
+        with_metadata: Include brief_intro, instructions, toc_entries.
+            Defaults to True when toc_only=True, False otherwise.
     """
     return await Mentat.get_instance().search(
-        query, top_k=top_k, hybrid=hybrid, toc_only=toc_only, source=source
+        query, top_k=top_k, hybrid=hybrid, toc_only=toc_only,
+        source=source, with_metadata=with_metadata,
     )
 
 
-async def inspect(doc_id: str) -> Optional[dict]:
-    """Retrieve full probe + librarian results for a document."""
-    return await Mentat.get_instance().inspect(doc_id)
+async def inspect(
+    doc_id: str,
+    sections: Optional[List[str]] = None,
+    full: bool = False,
+) -> Optional[dict]:
+    """Retrieve document metadata.
+
+    Lightweight by default (ToC + brief_intro).  Pass ``sections`` for
+    specific section chunk summaries, or ``full=True`` for everything.
+    """
+    return await Mentat.get_instance().inspect(doc_id, sections=sections, full=full)
 
 
 def probe(path: str) -> ProbeResult:
@@ -188,6 +200,26 @@ async def add_content(
     )
 
 
+async def search_grouped(
+    query: str,
+    top_k: int = 5,
+    hybrid: bool = False,
+    toc_only: bool = False,
+    source: Optional[str] = None,
+    with_metadata: Optional[bool] = None,
+) -> List[MentatDocResult]:
+    """Search for relevant content, grouped by document (no duplicate metadata)."""
+    return await Mentat.get_instance().search_grouped(
+        query, top_k=top_k, hybrid=hybrid, toc_only=toc_only,
+        source=source, with_metadata=with_metadata,
+    )
+
+
+async def get_doc_meta(doc_id: str) -> Optional[dict]:
+    """Get lightweight metadata for a document (brief_intro, instructions, toc, etc.)."""
+    return await Mentat.get_instance().get_doc_meta(doc_id)
+
+
 async def read_structured(
     path: str,
     sections: Optional[List[str]] = None,
@@ -220,7 +252,9 @@ __all__ = [
     "add",
     "add_batch",
     "search",
+    "search_grouped",
     "inspect",
+    "get_doc_meta",
     "probe",
     "stats",
     "collection",
@@ -244,6 +278,8 @@ __all__ = [
     "Mentat",
     "MentatConfig",
     "MentatResult",
+    "MentatDocResult",
+    "ChunkResult",
     "Collection",
     "ProbeResult",
 ]

@@ -184,6 +184,19 @@ for r in results:
     print(f"  Intro: {r.brief_intro}")
     print(f"  Guide: {r.instructions}")
 
+# Search grouped by document (no duplicate metadata)
+grouped = await mentat.search_grouped("outlier detection", top_k=5)
+for doc in grouped:
+    print(f"[{doc.filename}] score={doc.score:.3f}")
+    print(f"  Intro: {doc.brief_intro}")
+    for chunk in doc.chunks:
+        print(f"    §{chunk.section}: {chunk.summary}")
+
+# Get document metadata (brief_intro, instructions, toc, status)
+meta = await mentat.get_doc_meta(doc_id)
+print(f"  Status: {meta['processing_status']}")
+print(f"  Intro: {meta['brief_intro']}")
+
 # Inspect an indexed document (includes chunk summaries)
 info = await mentat.inspect(doc_id)
 
@@ -318,6 +331,11 @@ uv run pytest tests/test_queue_perf.py -v    # Queue throughput & latency
 | `test_cache.py`          | Content hash cache deduplication                                                      |
 | `test_collections.py`    | CollectionStore (add, remove, scoped search)                                          |
 | `test_async_workflow.py` | Full async add → search workflow integration                                          |
+| `test_source_metadata.py`| Source + metadata provenance through add → search pipeline                            |
+| `test_search_grouped.py` | search_grouped: grouping, toc_only, with_metadata, source filter, scoring             |
+| `test_doc_meta.py`       | get_doc_meta: fields, not-found, source/metadata, processing status, instructions     |
+| `test_server.py`         | HTTP endpoint tests (health, index, search, search-grouped, doc-meta, inspect, etc.)  |
+| `test_skill.py`          | Skill tool schemas (6 tools), system prompt content, export_skill                     |
 | `test_performance.py`    | Probe + indexing performance baselines                                                |
 
 ## Telemetry

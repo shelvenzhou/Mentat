@@ -29,21 +29,28 @@ Use this to understand what information is available and where it lives.
 ### Step 2: Read (read_segment)
 Once you identify a relevant section from Step 1, use `read_segment` with \
 the doc_id and section name to retrieve the actual content. This is \
-token-efficient: you only read what you need.
+token-efficient: you only read what you need. Parent sections automatically \
+include all child sections' content.
 
 ### Other Tools
-- `index_memory`: Add new files or content to the memory system
+- `index_memory`: Add files (via path) or raw content (via content+filename)
 - `memory_status`: Check if a document has finished processing
-- `get_summary`: Get the full overview of a known document
+- `get_summary`: Get a document overview (lightweight by default; use \
+`sections` for specific sections or `full=true` for everything)
+- `get_doc_meta`: Get document metadata (brief_intro, instructions, ToC, \
+source, status) by doc_id. Useful after search with `with_metadata=false` \
+to retrieve metadata for a specific document on demand.
 
 ### Guidelines
 - Always search before reading -- do not guess section names
 - Prefer toc_only search to minimize token usage
+- For subsequent searches on known documents, the `with_metadata` flag \
+defaults to false to save tokens; set it to true if you need brief_intro \
+and instructions again
 - Section names from search results can be used directly in read_segment
 - Documents may be processing in the background; check status if chunks are empty
 - High-frequency sections are auto-summarized for faster future retrieval
 - Use the `source` parameter to scope searches (e.g. "composio:gmail", "web_fetch", "browser")
-- Each indexed document has a source tag showing where the content originated
 """
 
 
@@ -91,6 +98,15 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                             "'composio:gmail'). Omit to search all sources."
                         ),
                     },
+                    "with_metadata": {
+                        "type": "boolean",
+                        "description": (
+                            "Include brief_intro, instructions, and toc_entries "
+                            "in results. Defaults to true when toc_only=true "
+                            "(discovery needs metadata), false when toc_only=false "
+                            "(saves tokens when you already know the documents)."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -103,7 +119,8 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
             "description": (
                 "Read a specific section from an indexed document (step 2 of "
                 "two-step protocol). Use doc_id and section name from "
-                "search_memory results."
+                "search_memory results. Parent sections automatically "
+                "include all child sections' content."
             ),
             "parameters": {
                 "type": "object",
@@ -116,7 +133,8 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                         "type": "string",
                         "description": (
                             "Section name to read (case-insensitive match). "
-                            "Use the section names returned by search_memory."
+                            "Use the section names returned by search_memory. "
+                            "Parent sections automatically include child content."
                         ),
                     },
                     "include_summary": {
@@ -134,8 +152,10 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "function": {
             "name": "get_summary",
             "description": (
-                "Get the full structured overview of an indexed document "
-                "(ToC, brief intro, instructions, processing status)."
+                "Get the structured overview of an indexed document. "
+                "Returns lightweight data (ToC + brief intro) by default. "
+                "Use 'sections' to get chunk summaries for specific sections, "
+                "or 'full' to get everything including the full probe data."
             ),
             "parameters": {
                 "type": "object",
@@ -143,6 +163,22 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                     "doc_id": {
                         "type": "string",
                         "description": "Document ID to inspect",
+                    },
+                    "sections": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional list of section names to include "
+                            "chunk summaries for (case-insensitive match)"
+                        ),
+                    },
+                    "full": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, return all probe data, chunks, and "
+                            "summaries. Default false (lightweight ToC + intro)."
+                        ),
+                        "default": False,
                     },
                 },
                 "required": ["doc_id"],
@@ -154,7 +190,9 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "function": {
             "name": "index_memory",
             "description": (
-                "Index a file into the memory system for future retrieval. "
+                "Index a file or raw text content into the memory system for "
+                "future retrieval. Provide either 'path' (file on disk) or "
+                "both 'content' and 'filename' (raw text). "
                 "Returns immediately; processing happens in the background."
             ),
             "parameters": {
@@ -162,7 +200,21 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path to index",
+                        "description": "File path to index (alternative to content+filename)",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": (
+                            "Raw text content to index (use with filename, "
+                            "alternative to path)"
+                        ),
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": (
+                            "Logical filename for the content — used for format "
+                            "detection and display (required when using content)"
+                        ),
                     },
                     "collection": {
                         "type": "string",
@@ -182,7 +234,7 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                         "description": "Arbitrary key-value metadata to store with the document",
                     },
                 },
-                "required": ["path"],
+                "required": [],
             },
         },
     },
@@ -200,6 +252,28 @@ TOOL_SCHEMAS: List[Dict[str, Any]] = [
                     "doc_id": {
                         "type": "string",
                         "description": "Document ID to check",
+                    },
+                },
+                "required": ["doc_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_doc_meta",
+            "description": (
+                "Get lightweight metadata for a document by ID. "
+                "Returns brief_intro, instructions, table of contents, "
+                "source, metadata, and processing status. "
+                "Use after search to get document context without re-fetching."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "doc_id": {
+                        "type": "string",
+                        "description": "Document ID from search results",
                     },
                 },
                 "required": ["doc_id"],

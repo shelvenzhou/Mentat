@@ -52,6 +52,31 @@ class MentatResult(BaseModel):
     metadata: Dict[str, Any] = {}  # Arbitrary metadata from caller
 
 
+class ChunkResult(BaseModel):
+    """A single chunk within a grouped search result."""
+
+    chunk_id: str
+    section: Optional[str] = None
+    content: str = ""
+    summary: str = ""
+    score: float = 0.0
+
+
+class MentatDocResult(BaseModel):
+    """Search results grouped by document — doc-level metadata once,
+    all matching chunks nested."""
+
+    doc_id: str
+    filename: str
+    brief_intro: str = ""
+    instructions: str = ""
+    source: str = ""
+    metadata: Dict[str, Any] = {}
+    toc_entries: List[dict] = []
+    score: float = 0.0  # Best (min distance) score among chunks
+    chunks: List[ChunkResult] = []
+
+
 @dataclass
 class MentatConfig:
     """Configuration for Mentat instance.
@@ -133,6 +158,67 @@ class MentatConfig:
         self.chunk_target_tokens = int(
             os.getenv("MENTAT_CHUNK_TARGET_TOKENS", str(self.chunk_target_tokens))
         )
+
+
+def _resolve_child_sections(toc_entries: List[dict], section_path: str) -> set:
+    """Resolve a section name to itself plus all descendant section titles.
+
+    Uses the ToC level hierarchy: if the matched entry is at level N,
+    all consecutive entries at level > N are children until another
+    entry at level <= N is found.
+
+    Args:
+        toc_entries: Flat list of ToC dicts with 'level' and 'title' keys.
+        section_path: Section name to look up (case-insensitive).
+
+    Returns:
+        Set of section titles (original casing) that match the parent
+        and all its children.  Empty set if no match found.
+    """
+    if not toc_entries:
+        return set()
+
+    section_lower = section_path.lower().strip()
+    result: set = set()
+
+    for i, entry in enumerate(toc_entries):
+        title = (entry.get("title", "") or "").strip()
+        title_lower = title.lower()
+
+        if (
+            title_lower == section_lower
+            or section_lower in title_lower
+            or title_lower in section_lower
+        ):
+            # Found a matching entry
+            result.add(title)
+            parent_level = entry.get("level", 1)
+
+            # Collect all subsequent entries at deeper levels
+            for j in range(i + 1, len(toc_entries)):
+                child_entry = toc_entries[j]
+                child_level = child_entry.get("level", 1)
+                if child_level <= parent_level:
+                    break  # Sibling or ancestor — stop
+                child_title = (child_entry.get("title", "") or "").strip()
+                if child_title:
+                    result.add(child_title)
+
+    return result
+
+
+def _section_matches(chunk_section: str, section_set: set) -> bool:
+    """Check if a chunk's section matches any entry in the filter set.
+
+    Uses case-insensitive substring matching (same semantics as read_segment).
+    """
+    cs = (chunk_section or "").lower().strip()
+    if not cs:
+        return False
+    return any(
+        cs == s or s in cs or cs in s
+        for s in section_set
+    )
 
 
 class Mentat:
@@ -634,27 +720,19 @@ class Mentat:
         self.logger.warning(f"Timeout waiting for {doc_id} to complete")
         return False
 
-    async def search(
+    async def _raw_search(
         self,
         query: str,
-        top_k: int = 5,
-        hybrid: bool = False,
-        doc_ids: Optional[List[str]] = None,
-        toc_only: bool = False,
-        source: Optional[str] = None,
-    ) -> List[MentatResult]:
-        """Search for relevant chunks and return results with instructions.
+        top_k: int,
+        hybrid: bool,
+        doc_ids: Optional[List[str]],
+        source: Optional[str],
+    ) -> tuple:
+        """Shared search pipeline: query transform, source filter, embed, search.
 
-        Each result includes the chunk content, its section context,
-        and the document-level brief_intro + instructions from the Librarian.
-
-        Args:
-            doc_ids: If provided, restrict search to these documents only.
-            toc_only: If True, return one result per document with ToC entries
-                and matched section names instead of full chunk content.
-                This is step 1 of the two-step retrieval protocol.
-            source: Filter results by source tag. Supports glob suffix
-                (e.g. "composio:*" matches all Composio sources).
+        Returns:
+            (raw_results, stub_cache, transformed_query)
+            raw_results may be empty list; stub_cache maps doc_id -> stub dict.
         """
         # Transform query via adaptors
         for adaptor in self._adaptors:
@@ -664,13 +742,12 @@ class Mentat:
         if source:
             source_doc_ids = self.storage.get_doc_ids_by_source(source)
             if not source_doc_ids:
-                return []
+                return [], {}, query
             if doc_ids is not None:
-                # Intersect: both explicit doc_ids and source filter must match
                 allowed = set(source_doc_ids)
                 doc_ids = [d for d in doc_ids if d in allowed]
                 if not doc_ids:
-                    return []
+                    return [], {}, query
             else:
                 doc_ids = source_doc_ids
 
@@ -680,7 +757,7 @@ class Mentat:
         )
 
         if not raw_results:
-            return []
+            return [], {}, query
 
         # Batch-fetch stubs for all unique doc_ids
         unique_doc_ids = {r.get("doc_id", "") for r in raw_results}
@@ -689,9 +766,74 @@ class Mentat:
             if did:
                 stub_cache[did] = self.storage.get_stub(did) or {}
 
+        return raw_results, stub_cache, query
+
+    def _get_status_note(self, doc_id: str, has_active_tasks: bool) -> str:
+        """Return processing status note for a document (empty if not active)."""
+        if not has_active_tasks:
+            return ""
+        status_info = self.processor.queue.get_status(doc_id)
+        if status_info and status_info.get("status") in ("pending", "processing"):
+            self.processor.queue.bump_priority(doc_id, delta=10)
+            status_val = status_info["status"]
+            if status_val == "pending":
+                return "\n\n⏳ [Processing: This document is queued for embedding and will be fully searchable soon]"
+            elif status_val == "processing":
+                return "\n\n🔄 [Processing: This document is currently being indexed and will be fully available shortly]"
+        return ""
+
+    @staticmethod
+    def _parse_stub_metadata(stub: Dict) -> Dict[str, Any]:
+        """Parse metadata_json from a stub dict."""
+        stub_metadata: Dict[str, Any] = {}
+        stub_metadata_json = stub.get("metadata_json", "")
+        if stub_metadata_json and stub_metadata_json != "{}":
+            try:
+                stub_metadata = json.loads(stub_metadata_json)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return stub_metadata
+
+    async def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        hybrid: bool = False,
+        doc_ids: Optional[List[str]] = None,
+        toc_only: bool = False,
+        source: Optional[str] = None,
+        with_metadata: Optional[bool] = None,
+    ) -> List[MentatResult]:
+        """Search for relevant chunks and return results with instructions.
+
+        Each result includes the chunk content, its section context,
+        and optionally the document-level brief_intro + instructions.
+
+        Args:
+            doc_ids: If provided, restrict search to these documents only.
+            toc_only: If True, return one result per document with ToC entries
+                and matched section names instead of full chunk content.
+                This is step 1 of the two-step retrieval protocol.
+            source: Filter results by source tag. Supports glob suffix
+                (e.g. "composio:*" matches all Composio sources).
+            with_metadata: Include brief_intro, instructions, and toc_entries
+                in results.  Defaults to True when toc_only=True (discovery
+                needs metadata), False when toc_only=False (agent already
+                knows the doc).
+        """
+        # Default: with_metadata follows toc_only if not explicitly set
+        if with_metadata is None:
+            with_metadata = toc_only
+
+        raw_results, stub_cache, query = await self._raw_search(
+            query, top_k, hybrid, doc_ids, source
+        )
+        if not raw_results:
+            return []
+
         # ToC-only mode: group by document, return summaries instead of chunks
         if toc_only:
-            return self._build_toc_results(raw_results, stub_cache, top_k)
+            return self._build_toc_results(raw_results, stub_cache, top_k, with_metadata)
 
         # Only check queue status if the processor has pending/processing tasks
         has_active_tasks = bool(self.processor.queue._tasks)
@@ -700,27 +842,9 @@ class Mentat:
         for r in raw_results:
             doc_id = r.get("doc_id", "")
             stub = stub_cache.get(doc_id, {})
-            instructions = stub.get("instruction", "")
-
-            # Only check queue status if there are active tasks (fast path)
-            if has_active_tasks:
-                status_info = self.processor.queue.get_status(doc_id)
-                if status_info and status_info.get("status") in ("pending", "processing"):
-                    self.processor.queue.bump_priority(doc_id, delta=10)
-                    status_val = status_info["status"]
-                    if status_val == "pending":
-                        instructions += "\n\n⏳ [Processing: This document is queued for embedding and will be fully searchable soon]"
-                    elif status_val == "processing":
-                        instructions += "\n\n🔄 [Processing: This document is currently being indexed and will be fully available shortly]"
-
-            # Parse metadata from stub
-            stub_metadata: Dict[str, Any] = {}
-            stub_metadata_json = stub.get("metadata_json", "")
-            if stub_metadata_json and stub_metadata_json != "{}":
-                try:
-                    stub_metadata = json.loads(stub_metadata_json)
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            base_instructions = stub.get("instruction", "") if with_metadata else ""
+            status_note = self._get_status_note(doc_id, has_active_tasks)
+            instructions = base_instructions + status_note
 
             results.append(
                 MentatResult(
@@ -730,11 +854,11 @@ class Mentat:
                     section=r.get("section"),
                     content=r.get("content", ""),
                     summary=r.get("summary", ""),
-                    brief_intro=stub.get("brief_intro", ""),
+                    brief_intro=stub.get("brief_intro", "") if with_metadata else "",
                     instructions=instructions,
                     score=r.get("_distance", 0.0),
                     source=stub.get("source", ""),
-                    metadata=stub_metadata,
+                    metadata=self._parse_stub_metadata(stub),
                 )
             )
 
@@ -746,16 +870,112 @@ class Mentat:
 
         return results
 
+    async def search_grouped(
+        self,
+        query: str,
+        top_k: int = 5,
+        hybrid: bool = False,
+        doc_ids: Optional[List[str]] = None,
+        toc_only: bool = False,
+        source: Optional[str] = None,
+        with_metadata: Optional[bool] = None,
+    ) -> List[MentatDocResult]:
+        """Search and return results grouped by document.
+
+        Same semantics as search() but groups chunks under their parent
+        document to eliminate duplicate metadata.  Each MentatDocResult
+        contains doc-level fields once and a list of ChunkResult items.
+
+        Args:
+            Same as search().
+        """
+        if with_metadata is None:
+            with_metadata = toc_only
+
+        raw_results, stub_cache, query = await self._raw_search(
+            query, top_k, hybrid, doc_ids, source
+        )
+        if not raw_results:
+            return []
+
+        has_active_tasks = bool(self.processor.queue._tasks)
+
+        # Group raw results by doc_id
+        doc_groups: Dict[str, Dict[str, Any]] = {}
+        for r in raw_results:
+            did = r.get("doc_id", "")
+            score = r.get("_distance", 0.0)
+            if did not in doc_groups:
+                doc_groups[did] = {"chunks": [], "best_score": score, "sections": set()}
+            doc_groups[did]["chunks"].append(r)
+            doc_groups[did]["best_score"] = min(doc_groups[did]["best_score"], score)
+            section = r.get("section", "")
+            if section:
+                doc_groups[did]["sections"].add(section)
+
+        results = []
+        for did, group in doc_groups.items():
+            stub = stub_cache.get(did, {})
+            base_instructions = stub.get("instruction", "") if with_metadata else ""
+            status_note = self._get_status_note(did, has_active_tasks)
+            instructions = base_instructions + status_note
+
+            # Extract ToC entries from probe_json (only when metadata requested)
+            toc_entries: List[dict] = []
+            if with_metadata:
+                probe_json_str = stub.get("probe_json", "")
+                if probe_json_str:
+                    try:
+                        probe_data = json.loads(probe_json_str)
+                        toc_entries = probe_data.get("structure", {}).get("toc", [])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+            # Build chunk list (empty in toc_only mode)
+            chunk_results: List[ChunkResult] = []
+            if not toc_only:
+                for r in group["chunks"]:
+                    chunk_results.append(
+                        ChunkResult(
+                            chunk_id=r.get("chunk_id", ""),
+                            section=r.get("section"),
+                            content=r.get("content", ""),
+                            summary=r.get("summary", ""),
+                            score=r.get("_distance", 0.0),
+                        )
+                    )
+
+            results.append(
+                MentatDocResult(
+                    doc_id=did,
+                    filename=stub.get("filename", ""),
+                    brief_intro=stub.get("brief_intro", "") if with_metadata else "",
+                    instructions=instructions,
+                    source=stub.get("source", ""),
+                    metadata=self._parse_stub_metadata(stub),
+                    toc_entries=toc_entries,
+                    score=group["best_score"],
+                    chunks=chunk_results,
+                )
+            )
+
+        results.sort(key=lambda r: r.score)
+        return results[:top_k]
+
     def _build_toc_results(
         self,
         raw_results: List[Dict[str, Any]],
         stub_cache: Dict[str, Dict],
         top_k: int,
+        with_metadata: bool = True,
     ) -> List[MentatResult]:
         """Group chunk-level search results by document, returning ToC summaries.
 
         Used in toc_only mode: one MentatResult per document with matched
         section names and full ToC entries instead of chunk content.
+
+        Args:
+            with_metadata: Include brief_intro, instructions, and toc_entries.
         """
         doc_groups: Dict[str, Dict[str, Any]] = {}
 
@@ -772,41 +992,28 @@ class Mentat:
                 doc_groups[doc_id]["best_score"], score
             )
 
+        # Only check queue status if the processor has pending/processing tasks
+        has_active_tasks = bool(self.processor.queue._tasks)
+
         results = []
         for doc_id, group in doc_groups.items():
             stub = stub_cache.get(doc_id, {})
 
-            # Extract ToC entries from probe_json
+            # Extract ToC entries from probe_json (only when metadata requested)
             toc_entries: List[dict] = []
-            probe_json_str = stub.get("probe_json", "")
-            if probe_json_str:
-                try:
-                    probe_data = json.loads(probe_json_str)
-                    toc_entries = probe_data.get("structure", {}).get("toc", [])
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            if with_metadata:
+                probe_json_str = stub.get("probe_json", "")
+                if probe_json_str:
+                    try:
+                        probe_data = json.loads(probe_json_str)
+                        toc_entries = probe_data.get("structure", {}).get("toc", [])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
             matched_sections = sorted(group["sections"])
-            instructions = stub.get("instruction", "")
-
-            # Append processing status if applicable
-            status_info = self.processor.queue.get_status(doc_id)
-            if status_info and status_info.get("status") in ("pending", "processing"):
-                self.processor.queue.bump_priority(doc_id, delta=10)
-                status_val = status_info["status"]
-                if status_val == "pending":
-                    instructions += "\n\n⏳ [Processing: This document is queued for embedding and will be fully searchable soon]"
-                elif status_val == "processing":
-                    instructions += "\n\n🔄 [Processing: This document is currently being indexed and will be fully available shortly]"
-
-            # Parse metadata from stub
-            stub_metadata: Dict[str, Any] = {}
-            stub_metadata_json = stub.get("metadata_json", "")
-            if stub_metadata_json and stub_metadata_json != "{}":
-                try:
-                    stub_metadata = json.loads(stub_metadata_json)
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            base_instructions = stub.get("instruction", "") if with_metadata else ""
+            status_note = self._get_status_note(doc_id, has_active_tasks)
+            instructions = base_instructions + status_note
 
             results.append(
                 MentatResult(
@@ -816,62 +1023,157 @@ class Mentat:
                     section=", ".join(matched_sections) if matched_sections else None,
                     content="",
                     summary="",
-                    brief_intro=stub.get("brief_intro", ""),
+                    brief_intro=stub.get("brief_intro", "") if with_metadata else "",
                     instructions=instructions,
                     score=group["best_score"],
                     toc_entries=toc_entries,
                     source=stub.get("source", ""),
-                    metadata=stub_metadata,
+                    metadata=self._parse_stub_metadata(stub),
                 )
             )
 
         results.sort(key=lambda r: r.score)
         return results[:top_k]
 
-    async def inspect(self, doc_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve full probe results, instructions, and chunk summaries."""
+    async def get_doc_meta(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        """Return lightweight document metadata.
+
+        Consolidates brief_intro, instructions, toc_entries, source,
+        metadata, and processing_status into a single response.
+
+        Returns None if the document is not found.
+        """
         stub = self.storage.get_stub(doc_id)
         if not stub:
             return None
 
-        # Parse metadata
-        stub_metadata: Dict[str, Any] = {}
-        stub_metadata_json = stub.get("metadata_json", "")
-        if stub_metadata_json and stub_metadata_json != "{}":
+        # Extract ToC from probe_json
+        toc_entries: List[dict] = []
+        probe_json_str = stub.get("probe_json", "")
+        if probe_json_str:
             try:
-                stub_metadata = json.loads(stub_metadata_json)
+                probe_data = json.loads(probe_json_str)
+                toc_entries = probe_data.get("structure", {}).get("toc", [])
             except (json.JSONDecodeError, TypeError):
                 pass
 
+        status = self.get_processing_status(doc_id)
+
+        return {
+            "doc_id": doc_id,
+            "filename": stub.get("filename"),
+            "brief_intro": stub.get("brief_intro"),
+            "instructions": stub.get("instruction"),
+            "toc_entries": toc_entries,
+            "source": stub.get("source", ""),
+            "metadata": self._parse_stub_metadata(stub),
+            "processing_status": status.get("status", "unknown"),
+        }
+
+    async def inspect(
+        self,
+        doc_id: str,
+        sections: Optional[List[str]] = None,
+        full: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieve document metadata, optionally with full probe data.
+
+        Three modes:
+          - **Lightweight** (default): doc_id, filename, brief_intro, source,
+            metadata, toc.  Omits instruction, full probe, chunk_summaries.
+          - **Section filter** (sections=["Methods"]): Lightweight plus
+            instruction and chunk_summaries for the requested sections.
+          - **Full** (full=True): Everything (current legacy behaviour).
+
+        Args:
+            doc_id: Document identifier.
+            sections: Optional section names to filter chunk_summaries.
+            full: If True, return the complete probe data and all chunks.
+        """
+        stub = self.storage.get_stub(doc_id)
+        if not stub:
+            return None
+
+        # Always include lightweight base
         result: Dict[str, Any] = {
             "doc_id": doc_id,
             "filename": stub.get("filename"),
             "brief_intro": stub.get("brief_intro"),
-            "instruction": stub.get("instruction"),
             "source": stub.get("source", ""),
-            "metadata": stub_metadata,
+            "metadata": self._parse_stub_metadata(stub),
         }
 
-        # Parse probe JSON if available
+        # Extract ToC from probe_json (always included)
         probe_json = stub.get("probe_json", "")
+        toc_entries: List[dict] = []
         if probe_json:
             try:
-                result["probe"] = json.loads(probe_json)
+                probe_data = json.loads(probe_json)
+                toc_entries = probe_data.get("structure", {}).get("toc", [])
             except json.JSONDecodeError:
                 pass
+        result["toc"] = toc_entries
 
-        # Fetch stored chunk summaries
-        chunk_rows = self.storage.get_chunks_by_doc(doc_id)
-        if chunk_rows:
-            result["chunk_summaries"] = [
-                {
-                    "index": r.get("chunk_index", 0),
-                    "section": r.get("section", ""),
-                    "summary": r.get("summary", ""),
-                }
-                for r in chunk_rows
-            ]
+        # ── Full mode: include everything ──────────────────────────────
+        if full:
+            result["instruction"] = stub.get("instruction")
+            if probe_json:
+                try:
+                    result["probe"] = json.loads(probe_json)
+                except json.JSONDecodeError:
+                    pass
+            chunk_rows = self.storage.get_chunks_by_doc(doc_id)
+            if chunk_rows:
+                result["chunk_summaries"] = [
+                    {
+                        "index": r.get("chunk_index", 0),
+                        "section": r.get("section", ""),
+                        "summary": r.get("summary", ""),
+                    }
+                    for r in chunk_rows
+                ]
+            return result
 
+        # ── Section filter mode ────────────────────────────────────────
+        if sections:
+            result["instruction"] = stub.get("instruction")
+            # Resolve parent sections to include children (consistent with read_segment)
+            expanded: set = set()
+            for s in sections:
+                expanded |= _resolve_child_sections(toc_entries, s)
+            # Fallback to simple matching if ToC resolution found nothing
+            if not expanded:
+                expanded = {s.lower().strip() for s in sections}
+                use_lowered = True
+            else:
+                use_lowered = False
+
+            chunk_rows = self.storage.get_chunks_by_doc(doc_id)
+            if chunk_rows:
+                matched = []
+                for r in chunk_rows:
+                    cs = (r.get("section", "") or "").strip()
+                    if not cs:
+                        continue
+                    if use_lowered:
+                        hit = _section_matches(cs, expanded)
+                    else:
+                        cs_lower = cs.lower()
+                        hit = any(
+                            cs_lower == t.lower()
+                            or t.lower() in cs_lower
+                            or cs_lower in t.lower()
+                            for t in expanded
+                        )
+                    if hit:
+                        matched.append({
+                            "index": r.get("chunk_index", 0),
+                            "section": r.get("section", ""),
+                            "summary": r.get("summary", ""),
+                        })
+                result["chunk_summaries"] = matched
+
+        # ── Lightweight mode (default) — just toc + brief_intro ───────
         return result
 
     def collection(self, name: str) -> "Collection":
@@ -1206,17 +1508,20 @@ class Mentat:
         1. Agent calls search(toc_only=True) to discover documents + sections
         2. Agent calls read_segment(doc_id, section) to get specific content
 
-        Section matching is case-insensitive substring match.
+        Section matching is case-insensitive substring match.  For parent
+        sections (non-leaf ToC entries), all child sections are included
+        automatically based on the ToC hierarchy.
 
         Args:
             doc_id: Document identifier from search results.
             section_path: Section name or partial match (e.g. "Installation"
-                matches "Installation Guide").
+                matches "Installation Guide").  Parent sections automatically
+                include all child content.
             include_summary: Include chunk summaries alongside content.
 
         Returns:
             Dict with doc_id, filename, section_path, chunks, toc_context,
-            token_estimate.
+            token_estimate, and expanded (True if children were included).
         """
         stub = self.storage.get_stub(doc_id)
         if not stub:
@@ -1229,19 +1534,47 @@ class Mentat:
         # Get stored chunks for this doc
         chunk_rows = self.storage.get_chunks_by_doc(doc_id)
 
-        # Match chunks by section name (case-insensitive contains match)
+        # Parse ToC from probe_json for parent-child resolution
+        toc_entries: List[dict] = []
+        probe_json_str = stub.get("probe_json", "")
+        if probe_json_str:
+            try:
+                probe_data = json.loads(probe_json_str)
+                toc_entries = probe_data.get("structure", {}).get("toc", [])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Resolve parent section to include children via ToC hierarchy
+        expanded_sections = _resolve_child_sections(toc_entries, section_path)
+
+        # Match chunks by section name
         section_lower = section_path.lower().strip()
         matched_chunks = []
 
         for row in chunk_rows:
-            chunk_section = (row.get("section", "") or "").lower()
-            if not chunk_section:
+            chunk_section = (row.get("section", "") or "").strip()
+            chunk_section_lower = chunk_section.lower()
+            if not chunk_section_lower:
                 continue  # Skip chunks with no section label
-            if (
-                chunk_section == section_lower
-                or section_lower in chunk_section
-                or (chunk_section and chunk_section in section_lower)
-            ):
+
+            matched = False
+            if expanded_sections:
+                # Match against expanded set (parent + children)
+                matched = any(
+                    chunk_section_lower == t.lower()
+                    or t.lower() in chunk_section_lower
+                    or chunk_section_lower in t.lower()
+                    for t in expanded_sections
+                )
+            else:
+                # Fallback: original substring matching (no ToC or no match)
+                matched = (
+                    chunk_section_lower == section_lower
+                    or section_lower in chunk_section_lower
+                    or chunk_section_lower in section_lower
+                )
+
+            if matched:
                 entry: Dict[str, Any] = {
                     "chunk_index": row.get("chunk_index", 0),
                     "section": row.get("section", ""),
@@ -1253,23 +1586,24 @@ class Mentat:
 
         # Extract matching ToC entries for context
         toc_context: List[dict] = []
-        probe_json_str = stub.get("probe_json", "")
-        if probe_json_str:
-            try:
-                probe_data = json.loads(probe_json_str)
-                toc = probe_data.get("structure", {}).get("toc", [])
-                for toc_entry in toc:
-                    title = (toc_entry.get("title", "") or "").lower()
-                    if not title:
-                        continue
-                    if (
-                        title == section_lower
-                        or section_lower in title
-                        or title in section_lower
-                    ):
-                        toc_context.append(toc_entry)
-            except (json.JSONDecodeError, TypeError):
-                pass
+        if toc_entries and expanded_sections:
+            for toc_entry in toc_entries:
+                title = (toc_entry.get("title", "") or "").strip()
+                if title and title in expanded_sections:
+                    toc_context.append(toc_entry)
+        elif toc_entries:
+            for toc_entry in toc_entries:
+                title = (toc_entry.get("title", "") or "").lower()
+                if not title:
+                    continue
+                if (
+                    title == section_lower
+                    or section_lower in title
+                    or title in section_lower
+                ):
+                    toc_context.append(toc_entry)
+
+        is_expanded = len(expanded_sections) > 1 if expanded_sections else False
 
         result: Dict[str, Any] = {
             "doc_id": doc_id,
@@ -1280,6 +1614,7 @@ class Mentat:
             "token_estimate": estimate_tokens(
                 json.dumps(matched_chunks, default=str)
             ),
+            "expanded": is_expanded,
         }
 
         # If no chunks found, provide guidance

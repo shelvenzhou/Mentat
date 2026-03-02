@@ -64,11 +64,11 @@ Uses `litellm` for all LLM calls. Takes only `ProbeResult` as input — never re
 - `core/access_tracker.py` — two-layer FIFO: recent (LRU) → hot (≥2 accesses). Promotion callback triggers on-demand summarization. Persistent heat map via `heat_map.json` (debounced writes, loaded on init).
 - `core/telemetry.py` — context-manager timing for probe/summarize/librarian phases, token savings tracking.
 - `adaptors/__init__.py` — `BaseAdaptor` ABC with `on_document_indexed`, `on_search_results`, `transform_query` hooks.
-- `server.py` — FastAPI HTTP server with endpoints for index, search, inspect, status, probe, read-segment, skill, collections, access tracking.
-- `skill.py` — Skill Integration Layer: OpenAI function calling tool schemas + system prompt fragment for agent two-step retrieval protocol. `export_skill()` returns combined payload.
+- `server.py` — FastAPI HTTP server with endpoints for index, search, search-grouped, doc-meta, inspect, status, probe, read-segment, skill, collections, access tracking.
+- `skill.py` — Skill Integration Layer: OpenAI function calling tool schemas (6 tools: search_memory, read_segment, get_summary, index_memory, memory_status, get_doc_meta) + system prompt fragment for agent two-step retrieval protocol. `export_skill()` returns combined payload.
 
 ### Public API (`mentat/__init__.py`)
-Module-level async functions: `add()`, `add_batch()`, `add_content()`, `search()`, `inspect()`, `read_structured()`, `read_segment()`, `track_access()`, `start_processor()`, `shutdown()`, `wait_for()`. Sync functions: `probe()`, `stats()`, `collection()`, `collections()`, `get_status()`, `configure()`, `get_tool_schemas()`, `get_system_prompt()`, `export_skill()`.
+Module-level async functions: `add()`, `add_batch()`, `add_content()`, `search()`, `search_grouped()`, `inspect()`, `get_doc_meta()`, `read_structured()`, `read_segment()`, `track_access()`, `start_processor()`, `shutdown()`, `wait_for()`. Sync functions: `probe()`, `stats()`, `collection()`, `collections()`, `get_status()`, `configure()`, `get_tool_schemas()`, `get_system_prompt()`, `export_skill()`. Models: `MentatResult`, `MentatDocResult`, `ChunkResult`.
 
 ## CLI Commands
 
@@ -96,7 +96,7 @@ The `skill.py` module exports OpenAI function calling tool schemas and a system 
 
 ## Key Patterns
 
-- **Pydantic v2** for all data models (`ProbeResult`, `TopicInfo`, `StructureInfo`, `Chunk`, `TocEntry`, `MentatResult`) — defined in `mentat/probes/base.py`
+- **Pydantic v2** for all data models (`ProbeResult`, `TopicInfo`, `StructureInfo`, `Chunk`, `TocEntry`, `MentatResult`, `MentatDocResult`, `ChunkResult`) — base models in `mentat/probes/base.py`, grouped-search models in `mentat/core/hub.py`
 - **Plugin registry** for probes — add new format by implementing `BaseProbe` and registering in `mentat/probes/__init__.py`
 - **Two-stage storage** — stubs stored immediately (with ToC); chunks stored after background embedding/summarization
 - **Collections** — named doc groups for scoped search; shared storage with doc_id references; LanceDB `WHERE doc_id IN (...)` pre-filtering
