@@ -12,12 +12,60 @@ warnings.filterwarnings("ignore", message="coroutine.*was never awaited")
 from mentat.core.hub import Mentat
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.option("--debug", is_flag=True, help="Enable debug logging")
-def cli(debug):
+@click.pass_context
+def cli(ctx, debug):
     """Mentat: Pure logic. Strategic retrieval."""
     level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(level=level, format="%(name)s - %(levelname)s - %(message)s")
+    if ctx.invoked_subcommand is None:
+        _print_help(ctx)
+
+
+def _print_help(ctx):
+    """Print a friendly overview of all commands."""
+    click.echo()
+    click.echo("  Mentat: Pure logic. Strategic retrieval.")
+    click.echo()
+    click.echo("  Usage: mentat [--debug] <command> [options]")
+    click.echo()
+    click.echo("  Commands:")
+    click.echo("    index <paths>          Index files or directories")
+    click.echo("    list                   List all indexed documents")
+    click.echo("    search <query>         Search for relevant documents")
+    click.echo("    inspect <doc_id>       Show probe results & instructions")
+    click.echo("    segment <doc_id> <sec> Read a specific section (step 2)")
+    click.echo("    status <doc_id>        Check processing status")
+    click.echo("    stats                  Show system statistics")
+    click.echo("    probe <files>          Run probes (no LLM, no storage)")
+    click.echo("    collection <sub>       Manage collections (list/show/delete/remove)")
+    click.echo("    skill                  Export agent tool schemas & prompt")
+    click.echo("    serve                  Start HTTP server (port 7832)")
+    click.echo("    help                   Show this help message")
+    click.echo()
+    click.echo("  Run 'mentat <command> --help' for details on a specific command.")
+    click.echo()
+
+
+@cli.command()
+@click.pass_context
+def help(ctx):
+    """Show this help message."""
+    _print_help(ctx)
+
+
+def _resolve_doc_id(m: Mentat, prefix: str) -> str:
+    """Resolve a doc ID prefix to full ID, or exit with a friendly error."""
+    try:
+        full_id = m.storage.resolve_doc_id(prefix)
+    except ValueError as e:
+        click.echo(f"Error: {e}")
+        raise SystemExit(1)
+    if full_id is None:
+        click.echo(f"Document not found: {prefix}")
+        raise SystemExit(1)
+    return full_id
 
 
 @cli.command()
@@ -180,9 +228,11 @@ def search(query, top_k, hybrid, coll_name, toc_only):
 
 @cli.command()
 @click.argument("doc_id")
-def inspect(doc_id):
+@click.option("--full", "-f", is_flag=True, help="Show full ToC and chunk summaries (no truncation)")
+def inspect(doc_id, full):
     """Show probe results and instructions for an indexed file."""
     m = Mentat()
+    doc_id = _resolve_doc_id(m, doc_id)
     info = asyncio.run(m.inspect(doc_id))
     if not info:
         click.echo(f"Document not found: {doc_id}")
@@ -192,36 +242,44 @@ def inspect(doc_id):
     click.echo(f"  Document: {info.get('filename', 'unknown')}")
     click.echo(f"  ID: {doc_id}")
     click.echo(f"{'─' * 60}")
+    click.echo(f"  Source: {info.get('source', 'N/A')}")
     click.echo(f"  Brief Intro: {info.get('brief_intro', 'N/A')}")
-    click.echo(f"  Instructions: {info.get('instruction', 'N/A')}")
 
+    # ToC — may be top-level or nested under probe
+    toc = info.get("toc", [])
     probe = info.get("probe")
-    if probe:
-        click.echo(f"\n{'─' * 60}")
-        click.echo("  Probe Results:")
-
-        topic = probe.get("topic", {})
-        if topic.get("title"):
-            click.echo(f"    Title: {topic['title']}")
-
+    if not toc and probe:
         structure = probe.get("structure", {})
         toc = structure.get("toc", [])
-        if toc:
-            click.echo(f"    ToC ({len(toc)} entries):")
-            for entry in toc[:10]:
-                indent = "      " + "  " * (entry.get("level", 1) - 1)
-                click.echo(f"{indent}- {entry.get('title', '')}")
+    if toc:
+        click.echo(f"\n{'─' * 60}")
+        toc_limit = len(toc) if full else 20
+        click.echo(f"  Table of Contents ({len(toc)} entries):")
+        for entry in toc[:toc_limit]:
+            indent = "    " + "  " * (entry.get("level", 1) - 1)
+            page = f" (p.{entry['page']})" if entry.get("page") else ""
+            click.echo(f"{indent}- {entry.get('title', '')}{page}")
+        if not full and len(toc) > 20:
+            click.echo(f"    … and {len(toc) - 20} more")
+
+    # Probe details (topic, stats)
+    if probe:
+        topic = probe.get("topic", {})
+        if topic.get("title"):
+            click.echo(f"\n  Title: {topic['title']}")
 
         stats = probe.get("stats", {})
         if stats:
-            click.echo(f"    Stats: {json.dumps(stats, indent=6, default=str)}")
+            click.echo(f"\n{'─' * 60}")
+            click.echo(f"  Stats: {json.dumps(stats, indent=6, default=str)}")
 
     # Chunk summaries
     chunk_summaries = info.get("chunk_summaries")
     if chunk_summaries:
         click.echo(f"\n{'─' * 60}")
+        cs_limit = len(chunk_summaries) if full else 15
         click.echo(f"  Chunk Summaries ({len(chunk_summaries)}):")
-        for cs in chunk_summaries[:15]:
+        for cs in chunk_summaries[:cs_limit]:
             idx = cs.get("index", "?")
             sec = f" [{cs['section']}]" if cs.get("section") else ""
             summary = cs.get("summary", "")[:120]
@@ -241,6 +299,7 @@ def segment(doc_id, section):
         mentat segment abc12345 "Chapter 1/Setup"
     """
     m = Mentat()
+    doc_id = _resolve_doc_id(m, doc_id)
     result = asyncio.run(m.read_segment(doc_id, section))
 
     if result.get("error"):
@@ -276,6 +335,7 @@ def status(doc_id):
         mentat status abc12345
     """
     m = Mentat()
+    doc_id = _resolve_doc_id(m, doc_id)
     status_dict = m.get_processing_status(doc_id)
 
     if status_dict.get("status") == "not_found":
@@ -421,6 +481,74 @@ def stats():
     click.echo(f"{'═' * 40}")
 
 
+@cli.command("list")
+@click.option(
+    "--source",
+    "-s",
+    default=None,
+    help="Filter by source (e.g. read, upload, web_fetch, composio:gmail)",
+)
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["table", "json"]),
+    default="table",
+    help="Output format",
+)
+def list_docs(source, fmt):
+    """List all indexed documents.
+
+    Examples:
+        mentat list
+        mentat list --source read
+        mentat list --format json
+    """
+    m = Mentat()
+    docs = m.storage.list_docs()
+
+    if source:
+        docs = [d for d in docs if d.get("source") == source]
+
+    if not docs:
+        click.echo("No documents found.")
+        return
+
+    if fmt == "json":
+        import json as _json
+
+        out = []
+        for d in docs:
+            meta = {}
+            if d.get("metadata_json"):
+                try:
+                    meta = _json.loads(d["metadata_json"])
+                except Exception:
+                    pass
+            out.append({
+                "id": d.get("id"),
+                "filename": d.get("filename"),
+                "source": d.get("source"),
+                "path": meta.get("path") or meta.get("url"),
+            })
+        click.echo(_json.dumps(out, indent=2, ensure_ascii=False))
+        return
+
+    click.echo(f"\n  {len(docs)} document(s) indexed\n")
+    click.echo(f"  {'ID':10s}  {'Source':22s}  Path / Filename")
+    click.echo(f"  {'─' * 10}  {'─' * 22}  {'─' * 50}")
+    for d in docs:
+        doc_id = d.get("id", "?")[:8] + "…"
+        src = d.get("source", "?")
+        meta = {}
+        if d.get("metadata_json"):
+            try:
+                meta = json.loads(d["metadata_json"])
+            except Exception:
+                pass
+        path = meta.get("path") or meta.get("url") or d.get("filename", "?")
+        click.echo(f"  {doc_id:10s}  {src:22s}  {path}")
+
+
 @cli.group("collection")
 def collection_cmd():
     """Manage collections (named groups of documents)."""
@@ -475,6 +603,7 @@ def collection_delete(name):
 def collection_remove(name, doc_id):
     """Remove a document from a collection (does NOT delete from storage)."""
     m = Mentat()
+    doc_id = _resolve_doc_id(m, doc_id)
     m.collection(name).remove(doc_id)
     click.echo(f"Removed {doc_id[:8]}… from '{name}'.")
 

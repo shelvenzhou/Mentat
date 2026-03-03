@@ -122,6 +122,19 @@ class LanceDBStorage:
             return res[0]
         return None
 
+    def resolve_doc_id(self, prefix: str) -> Optional[str]:
+        """Resolve a doc ID prefix to a full ID. Returns None if no match, raises ValueError if ambiguous."""
+        docs = self.list_docs()
+        matches = [d["id"] for d in docs if d.get("id", "").startswith(prefix)]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise ValueError(
+                f"Ambiguous prefix '{prefix}', matches {len(matches)} documents: "
+                + ", ".join(m[:12] + "…" for m in matches[:5])
+            )
+        return None
+
     def get_doc_ids_by_source(self, source: str) -> List[str]:
         """Return doc IDs matching a source pattern.
 
