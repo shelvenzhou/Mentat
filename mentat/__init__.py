@@ -30,7 +30,9 @@ from typing import Any, Dict, List, Optional
 async def add(path: str, force: bool = False, **kwargs) -> str:
     """Index a file. Returns document ID.
 
-    Accepts optional ``source`` (str) and ``metadata`` (dict) for provenance tracking.
+    Accepts optional ``source`` (str), ``metadata`` (dict) for provenance tracking,
+    and ``collection`` (str) to add the doc to a specific collection.
+    Auto-routing via ``auto_add_sources`` is also applied based on ``source``.
     """
     return await Mentat.get_instance().add(path, force=force, **kwargs)
 
@@ -61,6 +63,7 @@ async def search(
     toc_only: bool = False,
     source: Optional[str] = None,
     with_metadata: Optional[bool] = None,
+    collections: Optional[List[str]] = None,
 ) -> List[MentatResult]:
     """Search for relevant content.
 
@@ -70,10 +73,11 @@ async def search(
         source: Filter by source tag (exact or glob, e.g. "composio:*").
         with_metadata: Include brief_intro, instructions, toc_entries.
             Defaults to True when toc_only=True, False otherwise.
+        collections: Restrict search to docs in these collections (OR semantics).
     """
     return await Mentat.get_instance().search(
         query, top_k=top_k, hybrid=hybrid, toc_only=toc_only,
-        source=source, with_metadata=with_metadata,
+        source=source, with_metadata=with_metadata, collections=collections,
     )
 
 
@@ -194,7 +198,10 @@ async def add_content(
     force: bool = False,
     **kwargs,
 ) -> str:
-    """Index raw content without a file on disk. Returns document ID."""
+    """Index raw content without a file on disk. Returns document ID.
+
+    Accepts optional ``source``, ``metadata``, and ``collection`` kwargs.
+    """
     return await Mentat.get_instance().add_content(
         content, filename, content_type=content_type, force=force, **kwargs
     )
@@ -207,11 +214,12 @@ async def search_grouped(
     toc_only: bool = False,
     source: Optional[str] = None,
     with_metadata: Optional[bool] = None,
+    collections: Optional[List[str]] = None,
 ) -> List[MentatDocResult]:
     """Search for relevant content, grouped by document (no duplicate metadata)."""
     return await Mentat.get_instance().search_grouped(
         query, top_k=top_k, hybrid=hybrid, toc_only=toc_only,
-        source=source, with_metadata=with_metadata,
+        source=source, with_metadata=with_metadata, collections=collections,
     )
 
 
@@ -252,6 +260,38 @@ async def track_access(path: str) -> dict:
     return await Mentat.get_instance().track_access(path)
 
 
+def create_collection(
+    name: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    watch_paths: Optional[List[str]] = None,
+    watch_ignore: Optional[List[str]] = None,
+    auto_add_sources: Optional[List[str]] = None,
+) -> dict:
+    """Create or update a collection with config. Returns the collection record."""
+    return Mentat.get_instance().collections_store.create(
+        name,
+        metadata=metadata,
+        watch_paths=watch_paths,
+        watch_ignore=watch_ignore,
+        auto_add_sources=auto_add_sources,
+    )
+
+
+def get_collection_info(name: str) -> Optional[dict]:
+    """Get full collection record, or None if not found."""
+    return Mentat.get_instance().collections_store.get(name)
+
+
+def delete_collection(name: str) -> bool:
+    """Delete a collection (not the underlying documents)."""
+    return Mentat.get_instance().collections_store.delete_collection(name)
+
+
+def gc_collections() -> List[str]:
+    """Remove expired collections (based on metadata.ttl). Returns deleted names."""
+    return Mentat.get_instance().collections_store.gc()
+
+
 __all__ = [
     # Core APIs
     "add",
@@ -276,6 +316,11 @@ __all__ = [
     "read_segment",
     "track_access",
     "get_section_heat",
+    # Collection management APIs
+    "create_collection",
+    "get_collection_info",
+    "delete_collection",
+    "gc_collections",
     # Skill integration
     "get_tool_schemas",
     "get_system_prompt",

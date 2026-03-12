@@ -345,6 +345,7 @@ class Mentat:
         source: str = "",
         metadata: Optional[Dict[str, Any]] = None,
         _logical_filename: Optional[str] = None,
+        collection: Optional[str] = None,
     ) -> str:
         """Index a file with async background processing.
 
@@ -384,6 +385,12 @@ class Mentat:
                 print(
                     f"[Cache] Already indexed as {cached_id}. Use force=True to re-index."
                 )
+                # Still route to collections even on cache hit
+                if source:
+                    for coll_name in self.collections_store.get_auto_route_targets(source):
+                        self.collections_store.add_doc(coll_name, cached_id)
+                if collection:
+                    self.collections_store.add_doc(collection, cached_id)
                 return cached_id
 
         doc_id = str(uuid.uuid4())
@@ -455,6 +462,15 @@ class Mentat:
                     "metadata": metadata or {},
                 }
             )
+
+        # ── Collection routing ────────────────────────────────────────
+        # Auto-route: add to collections whose auto_add_sources match
+        if source:
+            for coll_name in self.collections_store.get_auto_route_targets(source):
+                self.collections_store.add_doc(coll_name, doc_id)
+        # Explicit collection
+        if collection:
+            self.collections_store.add_doc(collection, doc_id)
 
         # ── Inline processing (wait=True) or queue (wait=False) ───────
         if wait:
@@ -754,8 +770,9 @@ class Mentat:
         hybrid: bool,
         doc_ids: Optional[List[str]],
         source: Optional[str],
+        collections: Optional[List[str]] = None,
     ) -> tuple:
-        """Shared search pipeline: query transform, source filter, embed, search.
+        """Shared search pipeline: query transform, source/collection filter, embed, search.
 
         Returns:
             (raw_results, stub_cache, transformed_query)
@@ -764,6 +781,20 @@ class Mentat:
         # Transform query via adaptors
         for adaptor in self._adaptors:
             query = adaptor.transform_query(query)
+
+        # Collection filtering: union of doc_ids from all named collections
+        if collections:
+            coll_ids: set = set()
+            for coll_name in collections:
+                coll_ids.update(self.collections_store.get_doc_ids(coll_name))
+            if not coll_ids:
+                return [], {}, query
+            if doc_ids is not None:
+                doc_ids = [d for d in doc_ids if d in coll_ids]
+            else:
+                doc_ids = list(coll_ids)
+            if not doc_ids:
+                return [], {}, query
 
         # Source filtering: resolve matching doc_ids and merge with explicit doc_ids
         if source:
@@ -830,6 +861,7 @@ class Mentat:
         toc_only: bool = False,
         source: Optional[str] = None,
         with_metadata: Optional[bool] = None,
+        collections: Optional[List[str]] = None,
     ) -> List[MentatResult]:
         """Search for relevant chunks and return results with instructions.
 
@@ -847,13 +879,15 @@ class Mentat:
                 in results.  Defaults to True when toc_only=True (discovery
                 needs metadata), False when toc_only=False (agent already
                 knows the doc).
+            collections: If provided, restrict search to docs in these
+                collections (OR semantics — union of all named collections).
         """
         # Default: with_metadata follows toc_only if not explicitly set
         if with_metadata is None:
             with_metadata = toc_only
 
         raw_results, stub_cache, query = await self._raw_search(
-            query, top_k, hybrid, doc_ids, source
+            query, top_k, hybrid, doc_ids, source, collections
         )
         if not raw_results:
             return []
@@ -920,6 +954,7 @@ class Mentat:
         toc_only: bool = False,
         source: Optional[str] = None,
         with_metadata: Optional[bool] = None,
+        collections: Optional[List[str]] = None,
     ) -> List[MentatDocResult]:
         """Search and return results grouped by document.
 
@@ -934,7 +969,7 @@ class Mentat:
             with_metadata = toc_only
 
         raw_results, stub_cache, query = await self._raw_search(
-            query, top_k, hybrid, doc_ids, source
+            query, top_k, hybrid, doc_ids, source, collections
         )
         if not raw_results:
             return []
@@ -1337,6 +1372,7 @@ class Mentat:
         wait: bool = False,
         source: str = "",
         metadata: Optional[Dict[str, Any]] = None,
+        collection: Optional[str] = None,
     ) -> str:
         """Index raw content without requiring a file on disk.
 
@@ -1371,6 +1407,12 @@ class Mentat:
             cached_id = self.cache.get_by_hash(content_hash)
             if cached_id:
                 self.logger.info(f"Content cache hit for {filename} -> {cached_id}")
+                # Still route to collections even on cache hit
+                if source:
+                    for coll_name in self.collections_store.get_auto_route_targets(source):
+                        self.collections_store.add_doc(coll_name, cached_id)
+                if collection:
+                    self.collections_store.add_doc(collection, cached_id)
                 return cached_id
 
         # Write content to a temp file so probes can read it.
@@ -1397,6 +1439,7 @@ class Mentat:
                 source=source,
                 metadata=metadata,
                 _logical_filename=filename,
+                collection=collection,
             )
             # Also store under the content hash for future dedup
             self.cache.put_hash(content_hash, doc_id)
@@ -1757,8 +1800,8 @@ class Collection:
             use_llm_instructions=use_llm_instructions,
             source=source,
             metadata=metadata,
+            collection=self.name,
         )
-        self._store.add_doc(self.name, doc_id)
         return doc_id
 
     async def search(

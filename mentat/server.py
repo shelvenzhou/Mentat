@@ -9,7 +9,6 @@ Start with ``mentat serve`` or programmatically::
 
 import json
 import logging
-import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -105,6 +104,7 @@ class IndexRequest(BaseModel):
     wait: bool = False
     source: str = ""
     metadata: Optional[Dict[str, Any]] = None
+    collection: Optional[str] = None
 
 
 class IndexContentRequest(BaseModel):
@@ -116,6 +116,7 @@ class IndexContentRequest(BaseModel):
     wait: bool = False
     source: str = ""
     metadata: Optional[Dict[str, Any]] = None
+    collection: Optional[str] = None
 
 
 class SearchRequest(BaseModel):
@@ -123,6 +124,7 @@ class SearchRequest(BaseModel):
     top_k: int = 5
     hybrid: bool = False
     collection: Optional[str] = None
+    collections: Optional[List[str]] = None
     toc_only: bool = False
     source: Optional[str] = None
     with_metadata: Optional[bool] = None
@@ -156,6 +158,20 @@ class CollectionAddRequest(BaseModel):
     summarize: bool = False
 
 
+class CollectionCreateRequest(BaseModel):
+    metadata: Optional[Dict[str, Any]] = None
+    watch_paths: Optional[List[str]] = None
+    watch_ignore: Optional[List[str]] = None
+    auto_add_sources: Optional[List[str]] = None
+
+
+class CollectionUpdateRequest(BaseModel):
+    metadata: Optional[Dict[str, Any]] = None
+    watch_paths: Optional[List[str]] = None
+    watch_ignore: Optional[List[str]] = None
+    auto_add_sources: Optional[List[str]] = None
+
+
 # ── App Factory ──────────────────────────────────────────────────────────
 
 
@@ -172,7 +188,7 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mentat",
         description="Semantic file intelligence API",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
 
@@ -180,6 +196,13 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
 
     def _mentat() -> Mentat:
         return Mentat.get_instance()
+
+    def _resolve_collections(req: SearchRequest) -> Optional[List[str]]:
+        """Normalize collection/collections into a single list."""
+        colls = list(req.collections or [])
+        if req.collection and req.collection not in colls:
+            colls.append(req.collection)
+        return colls or None
 
     # ── Health ───────────────────────────────────────────────────────
 
@@ -202,6 +225,7 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             wait=req.wait,
             source=req.source,
             metadata=req.metadata,
+            collection=req.collection,
         )
         status = m.get_processing_status(doc_id)
         return {"doc_id": doc_id, "status": status.get("status", "unknown")}
@@ -218,6 +242,7 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             wait=req.wait,
             source=req.source,
             metadata=req.metadata,
+            collection=req.collection,
         )
         status = m.get_processing_status(doc_id)
         return {"doc_id": doc_id, "status": status.get("status", "unknown")}
@@ -227,23 +252,22 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
     @app.post("/search")
     async def search(req: SearchRequest):
         m = _mentat()
-        if req.collection:
-            coll = m.collection(req.collection)
-            results = await coll.search(req.query, top_k=req.top_k, hybrid=req.hybrid)
-        else:
-            results = await m.search(
-                req.query,
-                top_k=req.top_k,
-                hybrid=req.hybrid,
-                toc_only=req.toc_only,
-                source=req.source,
-                with_metadata=req.with_metadata,
-            )
+        colls = _resolve_collections(req)
+        results = await m.search(
+            req.query,
+            top_k=req.top_k,
+            hybrid=req.hybrid,
+            toc_only=req.toc_only,
+            source=req.source,
+            with_metadata=req.with_metadata,
+            collections=colls,
+        )
         return {"results": [r.model_dump() for r in results]}
 
     @app.post("/search-grouped")
     async def search_grouped(req: SearchRequest):
         m = _mentat()
+        colls = _resolve_collections(req)
         results = await m.search_grouped(
             req.query,
             top_k=req.top_k,
@@ -251,6 +275,7 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             toc_only=req.toc_only,
             source=req.source,
             with_metadata=req.with_metadata,
+            collections=colls,
         )
         return {"results": [r.model_dump() for r in results]}
 
@@ -362,7 +387,65 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
 
     @app.get("/collections")
     async def list_collections():
-        return {"collections": _mentat().list_collections()}
+        m = _mentat()
+        names = m.collections_store.list_collections()
+        result = []
+        for name in names:
+            rec = m.collections_store.get(name)
+            result.append({
+                "name": name,
+                "doc_count": len(rec["doc_ids"]) if rec else 0,
+                "metadata": rec.get("metadata", {}) if rec else {},
+                "created_at": rec.get("created_at", "") if rec else "",
+            })
+        return {"collections": result}
+
+    @app.post("/collections/gc")
+    async def collections_gc():
+        m = _mentat()
+        deleted = m.collections_store.gc()
+        return {"deleted": deleted}
+
+    @app.post("/collections/{name}")
+    async def create_collection(name: str, req: CollectionCreateRequest):
+        m = _mentat()
+        rec = m.collections_store.create(
+            name,
+            metadata=req.metadata,
+            watch_paths=req.watch_paths,
+            watch_ignore=req.watch_ignore,
+            auto_add_sources=req.auto_add_sources,
+        )
+        return {"name": name, "doc_count": len(rec["doc_ids"]), **rec}
+
+    @app.put("/collections/{name}")
+    async def update_collection(name: str, req: CollectionUpdateRequest):
+        m = _mentat()
+        if m.collections_store.get(name) is None:
+            raise HTTPException(status_code=404, detail=f"Collection not found: {name}")
+        rec = m.collections_store.create(
+            name,
+            metadata=req.metadata,
+            watch_paths=req.watch_paths,
+            watch_ignore=req.watch_ignore,
+            auto_add_sources=req.auto_add_sources,
+        )
+        return {"name": name, "doc_count": len(rec["doc_ids"]), **rec}
+
+    @app.get("/collections/{name}")
+    async def get_collection(name: str):
+        m = _mentat()
+        rec = m.collections_store.get(name)
+        if rec is None:
+            raise HTTPException(status_code=404, detail=f"Collection not found: {name}")
+        return {"name": name, "doc_count": len(rec["doc_ids"]), **rec}
+
+    @app.delete("/collections/{name}")
+    async def delete_collection(name: str):
+        m = _mentat()
+        if not m.collections_store.delete_collection(name):
+            raise HTTPException(status_code=404, detail=f"Collection not found: {name}")
+        return {"deleted": name}
 
     @app.post("/collections/{name}/add")
     async def collection_add(name: str, req: CollectionAddRequest):
