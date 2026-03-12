@@ -16,7 +16,10 @@ Mentat solves the **"Token Explosion"** problem in traditional RAG. Instead of f
 - **13 Format Probes**: PDF, images, Word, PowerPoint, calendars, archives, CSV, JSON, configs, code, logs, Markdown, and HTML — all without LLM calls.
 - **Strategy Retrieval**: Returns _instructions_ (e.g., "Filter Column B for values > 100") alongside data.
 - **Format-Aware Chunking**: Chunks preserve structural context (section, page, slide, class/function). Adjacent small chunks are automatically merged respecting document hierarchy — H1/H2 boundaries are never crossed.
-- **Collections**: Named groups of documents for scoped search — shared storage, no vector duplication.
+- **Collections**: Named groups of documents for scoped search — shared storage, no vector duplication. Supports multi-collection search (OR semantics), opaque metadata, and TTL-based garbage collection.
+- **Auto-Routing**: Documents are automatically classified into collections based on `source` tags and glob patterns (e.g., `openclaw:*` matches `openclaw:Read`, `openclaw:WebFetch`).
+- **File Watcher**: Per-collection directory watching via `watchfiles` (Rust backend). Content-hash dedup and throttling ensure only actual changes trigger re-indexing.
+- **Two-Step Retrieval**: Token-efficient search protocol — `search(toc_only=True)` returns lightweight document summaries, then `read_segment()` drills into specific sections on demand.
 - **Hybrid Search**: LanceDB-powered vector + full-text search with reranking.
 - **Multi-Provider LLM**: Powered by `litellm` — works with OpenAI, Claude, Gemini, Ollama, Azure, vLLM, and any OpenAI-compatible endpoint. Separate API keys/base URLs for the summary model and embedding model.
 - **Auto Vector Dimensions**: Embedding dimensions are auto-detected from the model name — no manual configuration needed.
@@ -60,7 +63,7 @@ See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for detailed performance analysis.
 - **LanceDB**: Separate tables for document stubs (metadata + instructions) and chunk-level vectors (with per-chunk summaries).
 - **FileStore**: Raw file storage — originals are always kept for downstream detailed access.
 - **ContentHashCache**: SHA-256 deduplication to skip re-indexing identical files.
-- **CollectionStore**: Named doc groups as lightweight JSON references.
+- **CollectionStore**: Named doc groups as lightweight JSON references with opaque metadata, watch configs, auto-routing rules, and TTL-based GC.
 
 ### Layer 2: The Probes (Semantic Fingerprinting)
 
@@ -210,32 +213,100 @@ await mentat.shutdown()
 
 #### Collections
 
-Group files into named collections for scoped search. Documents are indexed once into shared storage — collections hold lightweight references (like soft links), so the same file in multiple collections costs zero extra storage or indexing.
+Group files into named collections for scoped search. Documents are indexed once into shared storage — collections hold lightweight references (like symlinks), so the same file in multiple collections costs zero extra storage or indexing.
 
 ```python
 import mentat
 
-# Create / open a collection
-papers = mentat.collection("research_papers")
+# Create collections with config
+mentat.create_collection("code", metadata={"type": "project"})
+mentat.create_collection("docs", auto_add_sources=["web_fetch", "openclaw:*"])
 
-# Add files (indexes if new, just links if already indexed)
-await papers.add("paper1.pdf")
-await papers.add("paper2.pdf")
+# Add files — via collection param or Collection wrapper
+await mentat.add("src/main.py", wait=True, collection="code")
+code = mentat.collection("code")
+await code.add("src/utils.py")
 
-# Search within collection only
-results = await papers.search("quantum computing")
+# Scoped search
+results = await code.search("authentication")
 
-# Same file in another collection — no re-indexing
-physics = mentat.collection("quantum_physics")
-await physics.add("paper1.pdf")   # cache hit, links only
+# Multi-collection search (OR semantics)
+results = await mentat.search("auth", collections=["code", "docs"])
+
+# Same file in another collection — no re-indexing (cache hit)
+await mentat.add("src/main.py", collection="docs")
 
 # List & manage
-papers.list_docs()                # [{doc_id, filename, brief_intro}, ...]
-papers.remove(doc_id)             # unlink, not delete
-mentat.collections()              # ["research_papers", "quantum_physics"]
+mentat.collections()                    # ["code", "docs"]
+mentat.get_collection_info("code")      # full record with doc_ids, metadata
+mentat.delete_collection("docs")        # removes collection, not documents
+```
 
-# Global search still works across everything
-results = await mentat.search("quantum computing")
+#### Auto-Routing
+
+Automatically classify documents into collections based on source tags:
+
+```python
+# Set up: "openclaw:*" matches any openclaw tool source
+mentat.create_collection("files", auto_add_sources=["openclaw:*"])
+mentat.create_collection("memory", auto_add_sources=["openclaw:memory"])
+
+# source="openclaw:Read" → auto-routed to "files"
+await mentat.add("report.pdf", source="openclaw:Read")
+
+# source="openclaw:memory" → auto-routed to both "files" AND "memory"
+await mentat.add("notes.md", source="openclaw:memory")
+
+# Combine auto-routing with explicit collection
+await mentat.add("spec.md", source="openclaw:Read", collection="project_x")
+# → in both "files" (auto) and "project_x" (explicit)
+```
+
+#### File Watcher
+
+Auto-reindex when files change in watched directories:
+
+```python
+mentat.create_collection(
+    "project",
+    watch_paths=["/home/user/project/src"],
+    watch_ignore=["node_modules", "*.lock", "__pycache__"],
+)
+
+# Watcher starts automatically with Hub.start()
+# Changes are: throttled (5s/file) → hash-checked → re-indexed if content changed
+```
+
+#### Two-Step Retrieval
+
+Token-efficient search for LLM agents:
+
+```python
+# Step 1: Lightweight ToC search (minimal tokens)
+results = await mentat.search("auth", toc_only=True, with_metadata=True)
+for r in results:
+    print(r.filename, r.brief_intro, r.toc_entries)
+
+# Step 2: Drill into specific sections (on demand)
+segment = await mentat.read_segment(doc_id, "Authentication Flow")
+print(segment["content"])
+```
+
+#### Session Lifecycle (TTL-based GC)
+
+Collections support opaque metadata with TTL for ephemeral workspaces:
+
+```python
+# Create a session collection that expires after 1 hour
+mentat.create_collection("ses_abc", metadata={"ttl": 3600, "user": "alice"})
+
+# Use it normally...
+session = mentat.collection("ses_abc")
+await session.add("uploaded.pdf")
+results = await session.search("deployment")
+
+# Periodic cleanup removes expired collections
+deleted = mentat.gc_collections()  # ["ses_abc"] after TTL expires
 ```
 
 ### CLI
@@ -295,6 +366,55 @@ mentat search "installation instructions"
 mentat inspect <doc_id_from_step_2>
 ```
 
+### HTTP API (Server Mode)
+
+Run as a standalone HTTP service:
+
+```bash
+# Start server (default port 7832)
+mentat serve
+# or programmatically
+uvicorn mentat.server:create_app --factory --host 0.0.0.0 --port 7832
+```
+
+Key endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/index` | Index a file (supports `source`, `collection`, `metadata`) |
+| `POST` | `/index-content` | Index raw text content |
+| `POST` | `/search` | Search with vector/hybrid, `collections` filter, `toc_only` |
+| `POST` | `/search-grouped` | Search grouped by document |
+| `POST` | `/read-segment` | Read a specific section (two-step retrieval step 2) |
+| `GET` | `/doc-meta/{id}` | Get document metadata |
+| `GET` | `/inspect/{id}` | Full document inspection |
+| `POST` | `/collections/{name}` | Create/configure a collection |
+| `PUT` | `/collections/{name}` | Update collection config |
+| `GET` | `/collections/{name}` | Get collection info |
+| `DELETE` | `/collections/{name}` | Delete a collection |
+| `GET` | `/collections` | List all collections |
+| `POST` | `/collections/gc` | Garbage-collect expired collections |
+| `POST` | `/collections/{name}/add` | Add a file to a collection |
+| `POST` | `/collections/{name}/search` | Search within a collection |
+
+---
+
+## Examples
+
+See the [`examples/`](examples/) directory for runnable scripts:
+
+| Example | Description |
+|---------|-------------|
+| [`basic_usage.py`](examples/basic_usage.py) | Core workflow: probe → add → search → inspect |
+| [`collections.py`](examples/collections.py) | Named collections, scoped search, multi-collection queries |
+| [`auto_routing.py`](examples/auto_routing.py) | Source-based auto-classification into collections |
+| [`file_watcher.py`](examples/file_watcher.py) | Directory watching with auto-reindex on changes |
+| [`two_step_retrieval.py`](examples/two_step_retrieval.py) | Token-efficient `toc_only` → `read_segment` protocol |
+| [`batch_indexing.py`](examples/batch_indexing.py) | Bulk indexing with `add_batch()` and concurrent `add()` |
+| [`session_lifecycle.py`](examples/session_lifecycle.py) | TTL-based ephemeral collections with GC |
+| [`content_indexing.py`](examples/content_indexing.py) | Index raw strings (chat messages, API responses) |
+| [`hybrid_search.py`](examples/hybrid_search.py) | Vector vs hybrid search, source filters, collection scoping |
+
 ---
 
 ## Testing
@@ -331,12 +451,15 @@ uv run pytest tests/test_queue_perf.py -v    # Queue throughput & latency
 | `test_config.py`         | Config loading and env var precedence                                                 |
 | `test_vector_db.py`      | LanceDB storage: stubs, chunks, search, hybrid, collections                           |
 | `test_cache.py`          | Content hash cache deduplication                                                      |
-| `test_collections.py`    | CollectionStore (add, remove, scoped search)                                          |
+| `test_collections.py`    | CollectionStore: CRUD, metadata, watch config, auto-routing, persistence, GC          |
+| `test_collection_search.py` | Auto-routing on add, multi-collection search, Collection class integration         |
+| `test_watcher.py`        | File watcher: SHA-256 dedup, filter, sync, throttle, handle_change                    |
 | `test_async_workflow.py` | Full async add → search workflow integration                                          |
 | `test_source_metadata.py`| Source + metadata provenance through add → search pipeline                            |
 | `test_search_grouped.py` | search_grouped: grouping, toc_only, with_metadata, source filter, scoring             |
 | `test_doc_meta.py`       | get_doc_meta: fields, not-found, source/metadata, processing status, instructions     |
 | `test_server.py`         | HTTP endpoint tests (health, index, search, search-grouped, doc-meta, inspect, etc.)  |
+| `test_server_collections.py` | Collection CRUD endpoints, GC, index/search with collection params              |
 | `test_skill.py`          | Skill tool schemas (6 tools), system prompt content, export_skill                     |
 | `test_performance.py`    | Probe + indexing performance baselines                                                |
 
