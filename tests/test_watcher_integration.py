@@ -314,3 +314,77 @@ class TestWatcherEndToEnd:
         finally:
             await m.shutdown()
             Mentat.reset()
+
+    async def test_initial_scan_indexes_existing_files(self, tmp_path, monkeypatch):
+        """Existing files in watched dir are indexed on watcher start."""
+        m = _make_e2e_mentat(tmp_path, monkeypatch)
+
+        watch_dir = tmp_path / "memory"
+        watch_dir.mkdir()
+
+        # Create files BEFORE starting the watcher
+        (watch_dir / "note1.md").write_text("# Note 1\nRemember this.")
+        (watch_dir / "note2.md").write_text("# Note 2\nAnd this too.")
+
+        m.collections_store.create("memory", watch_paths=[str(watch_dir)])
+
+        indexed_paths = []
+        original_add = m.add
+
+        async def tracking_add(path, **kwargs):
+            indexed_paths.append(path)
+            return await original_add(path, **kwargs)
+
+        m.add = tracking_add
+
+        await m.start()
+
+        try:
+            # Give initial scan time to complete
+            for _ in range(_POLL_ATTEMPTS):
+                await asyncio.sleep(_POLL_INTERVAL)
+                if len(indexed_paths) >= 2:
+                    break
+
+            assert any("note1.md" in p for p in indexed_paths), "note1.md should be indexed by initial scan"
+            assert any("note2.md" in p for p in indexed_paths), "note2.md should be indexed by initial scan"
+
+            rec = m.collections_store.get("memory")
+            assert len(rec["doc_ids"]) >= 2
+        finally:
+            await m.shutdown()
+            Mentat.reset()
+
+    async def test_initial_scan_skips_already_indexed(self, tmp_path, monkeypatch):
+        """Initial scan uses force=False so cache hits are skipped."""
+        m = _make_e2e_mentat(tmp_path, monkeypatch)
+
+        watch_dir = tmp_path / "docs"
+        watch_dir.mkdir()
+        (watch_dir / "doc.md").write_text("# Pre-indexed doc")
+
+        # Pre-index the file
+        await m.start()
+        await m.add(str(watch_dir / "doc.md"), source="manual")
+
+        add_count = 0
+        original_add = m.add
+
+        async def counting_add(path, **kwargs):
+            nonlocal add_count
+            add_count += 1
+            return await original_add(path, **kwargs)
+
+        m.add = counting_add
+
+        # Create collection and sync — initial scan should hit cache
+        m.collections_store.create("docs", watch_paths=[str(watch_dir)])
+        await m.watcher.sync()
+
+        try:
+            await asyncio.sleep(_WATCHER_INIT_DELAY)
+            # add was called but should have been a cache hit (no re-processing)
+            assert add_count == 1  # called once for initial scan
+        finally:
+            await m.shutdown()
+            Mentat.reset()

@@ -118,6 +118,47 @@ class MentatWatcher:
             )
             logger.info("Started watcher for collection %r: %s", name, paths)
 
+    def _matches_ignore(self, ignore: list[str], path: Path) -> bool:
+        """Check if a path matches any ignore pattern."""
+        name = path.name
+        for pattern in ignore:
+            if fnmatch.fnmatch(name, pattern):
+                return True
+            if pattern in path.parts:
+                return True
+        return False
+
+    async def _initial_scan(
+        self, collection_name: str, paths: list[str], ignore: list[str]
+    ):
+        """Index existing files in watched directories (skip already-indexed via cache)."""
+        count = 0
+        for dir_path in paths:
+            for file_path in Path(dir_path).rglob("*"):
+                if not file_path.is_file():
+                    continue
+                if self._matches_ignore(ignore, file_path):
+                    continue
+                path_str = str(file_path)
+                try:
+                    doc_id = await self._mentat.add(
+                        path_str,
+                        force=False,
+                        source=f"watcher:{collection_name}",
+                        collection=collection_name,
+                    )
+                    # Seed hash so _handle_change skips unchanged files
+                    h = _sha256(path_str)
+                    if h:
+                        self._hashes[path_str] = h
+                    count += 1
+                except Exception:
+                    logger.exception("Initial scan failed for %s", path_str)
+        if count:
+            logger.info(
+                "Initial scan for %r: processed %d file(s)", collection_name, count
+            )
+
     async def _watch_collection(
         self, collection_name: str, paths: list[str], ignore: list[str]
     ):
@@ -136,6 +177,9 @@ class MentatWatcher:
         if not resolved_paths:
             logger.warning("No valid watch paths for collection %r", collection_name)
             return
+
+        # Index existing files before starting live watch
+        await self._initial_scan(collection_name, resolved_paths, ignore)
 
         watch_filter = _make_filter(ignore)
 

@@ -111,6 +111,86 @@ class TestWatcherSync:
         assert watcher._running is False
 
 
+class TestInitialScan:
+    """Test that _initial_scan indexes existing files."""
+
+    async def test_scans_existing_files(self, tmp_path):
+        mentat = MagicMock()
+        mentat.add = AsyncMock(return_value="doc-123")
+
+        watcher = MentatWatcher(mentat)
+
+        (tmp_path / "a.md").write_text("file a")
+        (tmp_path / "b.txt").write_text("file b")
+
+        await watcher._initial_scan("notes", [str(tmp_path)], [])
+
+        assert mentat.add.call_count == 2
+        # All calls use force=False (cache-aware)
+        for call in mentat.add.call_args_list:
+            assert call.kwargs["force"] is False
+            assert call.kwargs["collection"] == "notes"
+            assert call.kwargs["source"] == "watcher:notes"
+
+    async def test_scans_subdirectories(self, tmp_path):
+        mentat = MagicMock()
+        mentat.add = AsyncMock(return_value="doc-456")
+
+        watcher = MentatWatcher(mentat)
+
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (tmp_path / "top.md").write_text("top")
+        (sub / "nested.md").write_text("nested")
+
+        await watcher._initial_scan("code", [str(tmp_path)], [])
+        assert mentat.add.call_count == 2
+
+    async def test_respects_ignore_patterns(self, tmp_path):
+        mentat = MagicMock()
+        mentat.add = AsyncMock(return_value="doc-789")
+
+        watcher = MentatWatcher(mentat)
+
+        (tmp_path / "main.py").write_text("print('hi')")
+        (tmp_path / "pnpm.lock").write_text("lockfile")
+        (tmp_path / "data.tmp").write_text("temp")
+
+        await watcher._initial_scan("code", [str(tmp_path)], ["*.lock", "*.tmp"])
+
+        assert mentat.add.call_count == 1
+        mentat.add.assert_called_once_with(
+            str(tmp_path / "main.py"),
+            force=False,
+            source="watcher:code",
+            collection="code",
+        )
+
+    async def test_seeds_hashes(self, tmp_path):
+        mentat = MagicMock()
+        mentat.add = AsyncMock(return_value="doc-123")
+
+        watcher = MentatWatcher(mentat)
+
+        f = tmp_path / "note.md"
+        f.write_text("content")
+
+        await watcher._initial_scan("memory", [str(tmp_path)], [])
+
+        # Hash should be seeded so _handle_change skips unchanged files
+        assert str(f) in watcher._hashes
+        assert watcher._hashes[str(f)] == _sha256(str(f))
+
+    async def test_skips_empty_directory(self, tmp_path):
+        mentat = MagicMock()
+        mentat.add = AsyncMock()
+
+        watcher = MentatWatcher(mentat)
+        await watcher._initial_scan("empty", [str(tmp_path)], [])
+
+        mentat.add.assert_not_called()
+
+
 class TestWatcherHandleChange:
     """Test the _handle_change method directly."""
 
