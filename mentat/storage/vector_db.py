@@ -219,9 +219,13 @@ class LanceDBStorage:
         if self.chunks_table is None:
             return []
 
-        if use_hybrid and self._has_fts_index():
-            # LanceDB hybrid search: vector + FTS with reranking
-            q = self.chunks_table.search(query_vector, query_type="hybrid")
+        if use_hybrid and self._has_fts_index() and query_text:
+            # LanceDB hybrid: search(None) + explicit vector() and text()
+            q = (
+                self.chunks_table.search(query_type="hybrid")
+                .vector(query_vector)
+                .text(query_text)
+            )
         else:
             # Pure vector search
             q = self.chunks_table.search(query_vector)

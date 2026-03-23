@@ -416,6 +416,7 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             watch_ignore=req.watch_ignore,
             auto_add_sources=req.auto_add_sources,
         )
+        await m.watcher.sync()
         return {"name": name, "doc_count": len(rec["doc_ids"]), **rec}
 
     @app.put("/collections/{name}")
@@ -430,6 +431,7 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             watch_ignore=req.watch_ignore,
             auto_add_sources=req.auto_add_sources,
         )
+        await m.watcher.sync()
         return {"name": name, "doc_count": len(rec["doc_ids"]), **rec}
 
     @app.get("/collections/{name}")
@@ -445,6 +447,7 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
         m = _mentat()
         if not m.collections_store.delete_collection(name):
             raise HTTPException(status_code=404, detail=f"Collection not found: {name}")
+        await m.watcher.sync()
         return {"deleted": name}
 
     @app.post("/collections/{name}/add")
@@ -456,6 +459,12 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"File not found: {req.path}")
         doc_id = await coll.add(resolved, force=req.force, summarize=req.summarize)
         return {"doc_id": doc_id, "collection": name}
+
+    @app.delete("/collections/{name}/docs/{doc_id}")
+    async def collection_remove_doc(name: str, doc_id: str):
+        m = _mentat()
+        m.collections_store.remove_doc(name, doc_id)
+        return {"removed": doc_id, "collection": name}
 
     @app.post("/collections/{name}/search")
     async def collection_search(name: str, req: SearchRequest):

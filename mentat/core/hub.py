@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from mentat.core.telemetry import Telemetry
+from mentat.core.watcher import MentatWatcher
 from mentat.core.embeddings import EmbeddingRegistry
 from mentat.core.queue import (
     BackgroundProcessor,
@@ -301,6 +302,9 @@ class Mentat:
         # Background processor (async queue system)
         self.processor = BackgroundProcessor(self, max_concurrent=self.config.max_concurrent_tasks)
 
+        # File watcher (per-collection directory monitoring)
+        self.watcher = MentatWatcher(self)
+
     @classmethod
     def get_instance(cls, config: Optional[MentatConfig] = None) -> "Mentat":
         """Singleton accessor for module-level API."""
@@ -318,19 +322,21 @@ class Mentat:
         self._adaptors.append(adaptor)
 
     async def start(self):
-        """Start the background processor.
+        """Start the background processor and file watcher.
 
         Should be called once on application startup to enable async processing.
         If not called, documents will queue but not process until start() is invoked.
         """
         await self.processor.start()
+        await self.watcher.start()
 
     async def shutdown(self):
-        """Shutdown the background processor gracefully.
+        """Shutdown the file watcher and background processor gracefully.
 
         Waits for currently processing tasks to complete before stopping.
         Should be called on application shutdown.
         """
+        await self.watcher.stop()
         await self.processor.stop()
         self.access_tracker.save_now()
         self.section_heat.save_now()
@@ -1785,6 +1791,7 @@ class Collection:
         force: bool = False,
         summarize: bool = False,
         use_llm_instructions: bool = False,
+        wait: bool = False,
         source: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
@@ -1798,6 +1805,7 @@ class Collection:
             force=force,
             summarize=summarize,
             use_llm_instructions=use_llm_instructions,
+            wait=wait,
             source=source,
             metadata=metadata,
             collection=self.name,
