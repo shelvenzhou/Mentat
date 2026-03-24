@@ -7,7 +7,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient, ASGITransport
 
-from mentat.core.hub import Mentat, MentatConfig
+from mentat.core.hub import Mentat
+from mentat.core.models import MentatConfig
 from mentat.core.watcher import MentatWatcher
 from mentat.server import create_app
 from tests.conftest import FakeStorage, FakeEmbedding

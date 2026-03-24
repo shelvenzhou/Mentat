@@ -1,6 +1,6 @@
 """Tests for search_grouped() — document-grouped search results."""
 
-from mentat.core.hub import MentatDocResult, ChunkResult
+from mentat.core.models import MentatDocResult, ChunkResult
 
 
 async def test_search_grouped_basic(mentat_instance, tmp_path):

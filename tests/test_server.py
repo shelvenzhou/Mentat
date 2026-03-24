@@ -4,7 +4,8 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 
 from mentat.server import create_app
-from mentat.core.hub import Mentat, MentatConfig
+from mentat.core.hub import Mentat
+from mentat.core.models import MentatConfig
 from tests.conftest import FakeStorage, FakeEmbedding
 
 

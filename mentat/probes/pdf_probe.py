@@ -12,7 +12,7 @@ from mentat.probes.base import (
     Caption,
     Chunk,
 )
-from mentat.probes.instruction_templates import (
+from mentat.librarian.instruction_templates import (
     PDF_BRIEF_INTRO,
     PDF_INSTRUCTIONS,
     PDF_TOC_METHOD_METADATA,

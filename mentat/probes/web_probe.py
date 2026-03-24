@@ -12,7 +12,7 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import estimate_tokens, should_bypass, extract_preview
-from mentat.probes.instruction_templates import (
+from mentat.librarian.instruction_templates import (
     WEB_BRIEF_INTRO,
     WEB_INSTRUCTIONS,
 )

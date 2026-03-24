@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from mentat.core.hub import Mentat, MentatConfig
+from mentat import service
 
 logger = logging.getLogger("mentat.server")
 
@@ -197,13 +198,6 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
     def _mentat() -> Mentat:
         return Mentat.get_instance()
 
-    def _resolve_collections(req: SearchRequest) -> Optional[List[str]]:
-        """Normalize collection/collections into a single list."""
-        colls = list(req.collections or [])
-        if req.collection and req.collection not in colls:
-            colls.append(req.collection)
-        return colls or None
-
     # ── Health ───────────────────────────────────────────────────────
 
     @app.get("/health")
@@ -214,12 +208,11 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
 
     @app.post("/index")
     async def index_file(req: IndexRequest):
-        m = _mentat()
         resolved = str(Path(req.path).resolve())
         if not Path(resolved).is_file():
             raise HTTPException(status_code=404, detail=f"File not found: {req.path}")
-        doc_id = await m.add(
-            resolved,
+        return await service.index_file(
+            req.path,
             force=req.force,
             summarize=req.summarize,
             wait=req.wait,
@@ -227,13 +220,10 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             metadata=req.metadata,
             collection=req.collection,
         )
-        status = m.get_processing_status(doc_id)
-        return {"doc_id": doc_id, "status": status.get("status", "unknown")}
 
     @app.post("/index-content")
     async def index_content(req: IndexContentRequest):
-        m = _mentat()
-        doc_id = await m.add_content(
+        return await service.index_content(
             req.content,
             req.filename,
             content_type=req.content_type,
@@ -244,40 +234,36 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             metadata=req.metadata,
             collection=req.collection,
         )
-        status = m.get_processing_status(doc_id)
-        return {"doc_id": doc_id, "status": status.get("status", "unknown")}
 
     # ── Search ───────────────────────────────────────────────────────
 
     @app.post("/search")
     async def search(req: SearchRequest):
-        m = _mentat()
-        colls = _resolve_collections(req)
-        results = await m.search(
+        results = await service.search_docs(
             req.query,
             top_k=req.top_k,
             hybrid=req.hybrid,
             toc_only=req.toc_only,
             source=req.source,
             with_metadata=req.with_metadata,
-            collections=colls,
+            collection=req.collection,
+            collections=req.collections,
         )
-        return {"results": [r.model_dump() for r in results]}
+        return {"results": results}
 
     @app.post("/search-grouped")
     async def search_grouped(req: SearchRequest):
-        m = _mentat()
-        colls = _resolve_collections(req)
-        results = await m.search_grouped(
+        results = await service.search_grouped(
             req.query,
             top_k=req.top_k,
             hybrid=req.hybrid,
             toc_only=req.toc_only,
             source=req.source,
             with_metadata=req.with_metadata,
-            collections=colls,
+            collection=req.collection,
+            collections=req.collections,
         )
-        return {"results": [r.model_dump() for r in results]}
+        return {"results": results}
 
     # ── Status / Inspect ─────────────────────────────────────────────
 
@@ -381,7 +367,7 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
 
     @app.get("/stats")
     async def stats():
-        return _mentat().stats()
+        return service.get_stats()
 
     # ── Collections ──────────────────────────────────────────────────
 

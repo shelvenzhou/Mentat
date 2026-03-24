@@ -6,7 +6,8 @@ so individual test files don't need to duplicate boilerplate.
 
 import pytest
 
-from mentat.core.hub import Mentat, MentatConfig
+from mentat.core.hub import Mentat
+from mentat.core.models import MentatConfig
 
 
 class FakeEmbedding:

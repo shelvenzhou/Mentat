@@ -521,7 +521,8 @@ async def run_lancedb(
 
 def _make_mentat(config: BenchmarkConfig):
     """Create fresh Mentat instance."""
-    from mentat.core.hub import Mentat, MentatConfig
+    from mentat.core.hub import Mentat
+    from mentat.core.models import MentatConfig
     from mentat.core.telemetry import Telemetry
 
     _cleanup_paths(config.mentat_db_path, config.mentat_storage_dir)

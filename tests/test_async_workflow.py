@@ -6,7 +6,8 @@ import time
 from pathlib import Path
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
 
-from mentat.core.hub import Mentat, MentatConfig
+from mentat.core.hub import Mentat
+from mentat.core.models import MentatConfig
 from mentat.probes.base import ProbeResult, TopicInfo, StructureInfo, Chunk
 
 

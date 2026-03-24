@@ -11,7 +11,7 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import estimate_tokens, should_bypass, safe_read_text
-from mentat.probes.instruction_templates import (
+from mentat.librarian.instruction_templates import (
     LOG_BRIEF_INTRO,
     LOG_INSTRUCTIONS,
 )

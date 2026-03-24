@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from mentat.core.hub import Mentat, MentatConfig
+from mentat.core.hub import Mentat
+from mentat.core.models import MentatConfig
 
 
 class FakeEmbedding:

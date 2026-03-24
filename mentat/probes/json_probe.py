@@ -15,7 +15,7 @@ from mentat.probes._utils import (
     truncate_string,
     extract_preview,
 )
-from mentat.probes.instruction_templates import (
+from mentat.librarian.instruction_templates import (
     JSON_BRIEF_INTRO,
     JSON_INSTRUCTIONS,
 )

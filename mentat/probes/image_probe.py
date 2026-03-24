@@ -9,7 +9,7 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import format_size
-from mentat.probes.instruction_templates import (
+from mentat.librarian.instruction_templates import (
     IMAGE_BRIEF_INTRO,
     IMAGE_INSTRUCTIONS,
 )

@@ -9,7 +9,7 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import estimate_tokens
-from mentat.probes.instruction_templates import (
+from mentat.librarian.instruction_templates import (
     PPTX_BRIEF_INTRO,
     PPTX_INSTRUCTIONS,
 )

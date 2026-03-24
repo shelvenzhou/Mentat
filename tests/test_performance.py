@@ -5,7 +5,8 @@ import pytest
 import time
 from pathlib import Path
 
-from mentat.core.hub import Mentat, MentatConfig
+from mentat.core.hub import Mentat
+from mentat.core.models import MentatConfig
 
 
 @pytest.fixture

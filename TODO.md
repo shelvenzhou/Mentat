@@ -62,9 +62,9 @@ This document tracks features needed to complete Mentat's integration as OpenCla
 **Context**: Probes know chunk positions but don't store line numbers.
 **Approach**: Add `line_start`, `line_end` to Chunk metadata during probe, persist in chunk records.
 
-### #28 Directory Structure Refactoring
+### #28 Storage Directory Restructuring
 **Goal**: Restructure storage to match Design 3.0: `memory/raw/`, `memory/summaries/`, `memory/.mentat/`.
-**Context**: Current layout is `mentat_files/{doc_id}.ext` + `mentat_db/`. This is internal and doesn't affect API.
+**Context**: Current layout is `mentat_files/{doc_id}.ext` + `mentat_db/`. This is internal and doesn't affect API. Code module structure was refactored (hub.py decomposed into indexer/searcher/reader, BaseVectorStorage ABC, metadata filtering, service layer) but storage directory layout unchanged.
 **Approach**: Reconfigure `MentatConfig` paths, add migration utility.
 
 ### #19 Timestamp Metadata Extraction

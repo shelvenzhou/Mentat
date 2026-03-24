@@ -15,7 +15,7 @@ from mentat.probes._utils import (
     safe_read_text,
     truncate_string,
 )
-from mentat.probes.instruction_templates import (
+from mentat.librarian.instruction_templates import (
     CONFIG_BRIEF_INTRO,
     CONFIG_INSTRUCTIONS,
     CONFIG_PARSER_YAML,

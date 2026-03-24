@@ -38,39 +38,50 @@ Semantic fingerprinting — no LLM, pure extraction. Each probe implements `Base
 
 Key utilities in `_utils.py`: `estimate_tokens` (1 token ≈ 3 chars), `normalize_chunk_sizes` (merges adjacent small chunks <300 tokens, respects H1/H2 boundaries, max merged 1200 tokens), `should_bypass` (<1000 token files return full content).
 
-Format-specific reading guide templates live in `instruction_templates.py`.
-
-### Layer 2 — Librarian (`mentat/librarian/engine.py`)
-Uses `litellm` for all LLM calls. Takes only `ProbeResult` as input — never reads raw files.
-- **Phase 1 — Chunk Summarisation** (optional): LLM generates 1-3 sentence summaries per chunk (batched, concurrent). Small files bypass this.
-- **Phase 2 — Instruction Generation** (template-based, no LLM): produces `brief_intro` + `instructions` from ToC + statistics.
+### Layer 2 — Librarian (`mentat/librarian/`)
+- `engine.py` — Uses `litellm` for all LLM calls. Takes only `ProbeResult` as input — never reads raw files.
+  - **Phase 1 — Chunk Summarisation** (optional): LLM generates 1-3 sentence summaries per chunk (batched, concurrent). Small files bypass this.
+  - **Phase 2 — Instruction Generation** (template-based, no LLM): produces `brief_intro` + `instructions` from ToC + statistics.
+- `instruction_templates.py` — Format-specific reading guide templates used by all probes.
 
 ### Layer 3 — Storage (`mentat/storage/`)
-- `LanceDBStorage` (`vector_db.py`) — separate tables for document stubs and chunks. Lazy vector table creation (dimension auto-detected from first embedding). BTREE scalar index on `doc_id` for collection filtering.
+- `BaseVectorStorage` (`base.py`) — ABC interface for vector storage backends. Enables swapping LanceDB for other backends.
+- `LanceDBStorage` (`vector_db.py`) — implements `BaseVectorStorage`. Separate tables for document stubs and chunks. Lazy vector table creation (dimension auto-detected from first embedding). BTREE scalar index on `doc_id` for collection filtering. Chunks include metadata columns (`source`, `indexed_at`, `file_type`, `metadata_json`) for pre-filtering.
+- `MetadataFilter` / `MetadataFilterSet` (`filters.py`) — Backend-agnostic filter representation with SQL builder for LanceDB WHERE clauses. Supports eq, neq, gt, gte, lt, lte, in, like, between operators.
 - `LocalFileStore` (`file_store.py`) — raw file copies for downstream access.
 - `ContentHashCache` (`cache.py`) — SHA-256 deduplication (JSON-backed). Shares `_JsonMap` base class with `PathIndex`.
 - `PathIndex` (`cache.py`) — path→doc_id mapping for file identity tracking. When the same path is re-indexed with changed content, the old document (stubs + chunks) is deleted before creating the new one. Synthetic keys (`__content__:{filename}`) support `add_content()` dedup. Inherits `_JsonMap` base.
 - `CollectionStore` (`collections.py`) — named doc groups as JSON references (no vector duplication).
 
 ### Orchestrator (`mentat/core/hub.py`)
-`Mentat` class — singleton via `get_instance()`, reset with `reset()`. Houses `MentatConfig` dataclass (loads `.env` via python-dotenv, `MENTAT_*` env vars, precedence: explicit arg > env var > default).
+`Mentat` class — singleton via `get_instance()`, reset with `reset()`. Delegates operations to focused modules:
+- `core/indexer.py` — `Indexer`: `add()`, `add_batch()`, `add_content()`, processing status, wait.
+- `core/searcher.py` — `Searcher`: `search()`, `search_grouped()`, `_raw_search()`, result assembly.
+- `core/reader.py` — `Reader`: `inspect()`, `read_segment()`, `read_structured()`, `get_doc_meta()`, `summarize_doc()`.
+
+`MentatConfig` dataclass in `core/models.py` (loads `.env` via python-dotenv, `MENTAT_*` env vars, precedence: explicit arg > env var > default).
 
 **Async processing pipeline** (default): `add()` returns in ~1-3s after probe + stub storage, then queues background embeddings/summarization. Legacy sync: `add(wait=True)` blocks until complete.
+
+### Data Models (`mentat/core/models.py`)
+All Pydantic models and base interfaces in one place: `MentatResult`, `MentatDocResult`, `ChunkResult`, `MentatConfig`, `Collection`, `BaseAdaptor`.
 
 ### Background Queue (`mentat/core/queue.py`)
 `ProcessingQueue` + `BackgroundProcessor` — in-memory priority queue (transient, lost on restart). Priority boosting: documents queried before processing completes get +10 priority. Concurrency: `max_concurrent_tasks` (default 5, via `MENTAT_MAX_CONCURRENT_TASKS`).
 
+### Service Layer (`mentat/service.py`)
+Shared stateless functions used by CLI, server, and future SDK: `index_file()`, `search_docs()`, `resolve_doc_id()`, `list_docs()`, etc. CLI formats for terminal; server returns as JSON.
+
 ### Other Core Modules
-- `core/embeddings.py` — `LiteLLMEmbedding` provider with batching. Oversized chunks split with 500-char overlap.
+- `core/embeddings.py` — `BaseEmbedding` ABC + `LiteLLMEmbedding` provider with batching. `EmbeddingRegistry` for pluggable providers. Oversized chunks split with 500-char overlap.
 - `core/access_tracker.py` — two-layer FIFO: recent (LRU) → hot (≥2 accesses). Promotion callback triggers on-demand summarization. Persistent heat map via `heat_map.json` (debounced writes, loaded on init).
 - `core/section_heat.py` — `SectionHeatTracker`: section-level importance tracking with weighted scoring (read_segment=3.0, inspect=2.0, search=1.0), exponential time decay (24h half-life), hot threshold, LRU eviction, and JSON persistence (`section_heat_map.json`). Parent→child propagation via ToC hierarchy.
 - `core/telemetry.py` — context-manager timing for probe/summarize/librarian phases, token savings tracking.
-- `adaptors/__init__.py` — `BaseAdaptor` ABC with `on_document_indexed`, `on_search_results`, `transform_query` hooks.
-- `server.py` — FastAPI HTTP server with endpoints for index, search, search-grouped, doc-meta, inspect, status, probe, read-segment, section-heat, skill, collections, access tracking.
-- `skill.py` — Skill Integration Layer: OpenAI function calling tool schemas (7 tools: search_memory, read_segment, get_summary, index_memory, memory_status, get_doc_meta, get_section_heat) + system prompt fragment for agent two-step retrieval protocol. `export_skill()` returns combined payload.
+- `server.py` — FastAPI HTTP server. Delegates to `service.py` for shared operations.
+- `skill.py` — Skill Integration Layer: OpenAI function calling tool schemas + system prompt fragment for agent two-step retrieval protocol. `export_skill()` returns combined payload.
 
 ### Public API (`mentat/__init__.py`)
-Module-level async functions: `add()`, `add_batch()`, `add_content()`, `search()`, `search_grouped()`, `inspect()`, `get_doc_meta()`, `read_structured()`, `read_segment()`, `track_access()`, `start_processor()`, `shutdown()`, `wait_for()`. Sync functions: `probe()`, `stats()`, `get_section_heat()`, `collection()`, `collections()`, `get_status()`, `configure()`, `get_tool_schemas()`, `get_system_prompt()`, `export_skill()`. Models: `MentatResult`, `MentatDocResult`, `ChunkResult`.
+Thin convenience wrappers delegating to `Mentat` singleton. Module-level async functions: `add()`, `add_batch()`, `add_content()`, `search()`, `search_grouped()`, `inspect()`, `get_doc_meta()`, `read_structured()`, `read_segment()`, `track_access()`, `start_processor()`, `shutdown()`, `wait_for()`. Sync functions: `probe()`, `stats()`, `get_section_heat()`, `collection()`, `collections()`, `get_status()`, `configure()`. Re-exports: `Mentat`, `MentatConfig`, `MentatResult`, `MentatDocResult`, `ChunkResult`, `Collection`, `BaseAdaptor`, `ProbeResult`.
 
 ## CLI Commands
 
@@ -98,7 +109,7 @@ The `skill.py` module exports OpenAI function calling tool schemas and a system 
 
 ## Key Patterns
 
-- **Pydantic v2** for all data models (`ProbeResult`, `TopicInfo`, `StructureInfo`, `Chunk`, `TocEntry`, `MentatResult`, `MentatDocResult`, `ChunkResult`) — base models in `mentat/probes/base.py`, grouped-search models in `mentat/core/hub.py`
+- **Pydantic v2** for all data models (`ProbeResult`, `TopicInfo`, `StructureInfo`, `Chunk`, `TocEntry`) in `mentat/probes/base.py`, result/config models (`MentatResult`, `MentatDocResult`, `ChunkResult`, `MentatConfig`, `BaseAdaptor`) in `mentat/core/models.py`
 - **Plugin registry** for probes — add new format by implementing `BaseProbe` and registering in `mentat/probes/__init__.py`
 - **Two-stage storage** — stubs stored immediately (with ToC); chunks stored after background embedding/summarization
 - **Collections** — named doc groups for scoped search; shared storage with doc_id references; LanceDB `WHERE doc_id IN (...)` pre-filtering

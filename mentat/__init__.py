@@ -4,114 +4,33 @@ Mentat: Pure logic. Strategic retrieval.
 Usage:
     import mentat
 
-    # Index a file
     doc_id = await mentat.add("paper.pdf")
-
-    # Search
     results = await mentat.search("What algorithm is used?")
-
-    # Probe (no LLM, no storage)
     probe_result = mentat.probe("data.csv")
-
-    # Inspect indexed document
-    info = await mentat.inspect(doc_id)
-
-    # System stats
-    stats = mentat.stats()
 """
 
-from mentat.core.hub import Mentat, MentatConfig, MentatResult, MentatDocResult, ChunkResult, Collection
-from mentat.probes import run_probe
+# ── Core classes & models ────────────────────────────────────────────
+from mentat.core.hub import Mentat
+from mentat.core.models import (
+    MentatConfig,
+    MentatResult,
+    MentatDocResult,
+    ChunkResult,
+    Collection,
+    BaseAdaptor,
+)
 from mentat.probes.base import ProbeResult, TopicInfo, StructureInfo, Chunk
+from mentat.probes import run_probe
 from mentat.skill import get_tool_schemas, get_system_prompt, export_skill
-from typing import Any, Dict, List, Optional
 
+# ── Service layer (shared by CLI, server, SDK) ───────────────────────
+from mentat import service
 
-async def add(path: str, force: bool = False, **kwargs) -> str:
-    """Index a file. Returns document ID.
+# ── Module-level convenience API ─────────────────────────────────────
+# These delegate to the Mentat singleton so callers can write
+# ``await mentat.add(...)`` instead of ``Mentat.get_instance().add(...)``.
 
-    Accepts optional ``source`` (str), ``metadata`` (dict) for provenance tracking,
-    and ``collection`` (str) to add the doc to a specific collection.
-    Auto-routing via ``auto_add_sources`` is also applied based on ``source``.
-    """
-    return await Mentat.get_instance().add(path, force=force, **kwargs)
-
-
-async def add_batch(
-    paths: List[str],
-    force: bool = False,
-    summarize: bool = False,
-    source: str = "",
-    metadata: Optional[Dict[str, Any]] = None,
-) -> List[str]:
-    """Index multiple files with batched embedding (one API call for all chunks).
-
-    Much faster than calling ``add(wait=True)`` in a loop.
-
-    Returns:
-        List of document IDs in the same order as ``paths``.
-    """
-    return await Mentat.get_instance().add_batch(
-        paths, force=force, summarize=summarize, source=source, metadata=metadata
-    )
-
-
-async def search(
-    query: str,
-    top_k: int = 5,
-    hybrid: bool = False,
-    toc_only: bool = False,
-    source: Optional[str] = None,
-    with_metadata: Optional[bool] = None,
-    collections: Optional[List[str]] = None,
-) -> List[MentatResult]:
-    """Search for relevant content.
-
-    Args:
-        toc_only: If True, return document-level ToC summaries instead of
-            full chunk content (step 1 of two-step retrieval protocol).
-        source: Filter by source tag (exact or glob, e.g. "composio:*").
-        with_metadata: Include brief_intro, instructions, toc_entries.
-            Defaults to True when toc_only=True, False otherwise.
-        collections: Restrict search to docs in these collections (OR semantics).
-    """
-    return await Mentat.get_instance().search(
-        query, top_k=top_k, hybrid=hybrid, toc_only=toc_only,
-        source=source, with_metadata=with_metadata, collections=collections,
-    )
-
-
-async def inspect(
-    doc_id: str,
-    sections: Optional[List[str]] = None,
-    full: bool = False,
-) -> Optional[dict]:
-    """Retrieve document metadata.
-
-    Lightweight by default (ToC + brief_intro).  Pass ``sections`` for
-    specific section chunk summaries, or ``full=True`` for everything.
-    """
-    return await Mentat.get_instance().inspect(doc_id, sections=sections, full=full)
-
-
-def probe(path: str) -> ProbeResult:
-    """Run probes on a file (no LLM, no storage). Returns structured probe result."""
-    return run_probe(path)
-
-
-def stats() -> dict:
-    """Return system statistics."""
-    return Mentat.get_instance().stats()
-
-
-def collection(name: str) -> Collection:
-    """Get a named collection for scoped add/search operations."""
-    return Mentat.get_instance().collection(name)
-
-
-def collections() -> List[str]:
-    """List all collection names."""
-    return Mentat.get_instance().list_collections()
+_get = Mentat.get_instance
 
 
 def configure(config: MentatConfig):
@@ -120,217 +39,78 @@ def configure(config: MentatConfig):
     Mentat.get_instance(config)
 
 
-# --- Background Processing APIs ---
+# Indexing
+async def add(path, **kw):
+    return await _get().add(path, **kw)
 
+async def add_batch(paths, **kw):
+    return await _get().add_batch(paths, **kw)
 
+async def add_content(content, filename, **kw):
+    return await _get().add_content(content, filename, **kw)
+
+# Search & retrieval
+async def search(query, **kw):
+    return await _get().search(query, **kw)
+
+async def search_grouped(query, **kw):
+    return await _get().search_grouped(query, **kw)
+
+async def inspect(doc_id, **kw):
+    return await _get().inspect(doc_id, **kw)
+
+async def get_doc_meta(doc_id):
+    return await _get().get_doc_meta(doc_id)
+
+async def read_segment(doc_id, section_path, **kw):
+    return await _get().read_segment(doc_id, section_path, **kw)
+
+async def read_structured(path, **kw):
+    return await _get().read_structured(path, **kw)
+
+# Probe (no LLM, no storage)
+def probe(path):
+    return run_probe(path)
+
+# Lifecycle
 async def start_processor():
-    """Start the background processing worker.
-
-    Should be called once on application startup to enable async document processing.
-    If not called, documents will be queued but not processed until start_processor() is invoked.
-
-    Example:
-        await mentat.start_processor()
-        doc_id = await mentat.add("large.pdf")  # Returns immediately, processes in background
-    """
-    await Mentat.get_instance().start()
-
+    await _get().start()
 
 async def shutdown():
-    """Shutdown the background processor gracefully.
+    await _get().shutdown()
 
-    Waits for currently processing tasks to complete before stopping.
-    Should be called on application shutdown.
+# Status
+def get_status(doc_id):
+    return _get().get_processing_status(doc_id)
 
-    Example:
-        await mentat.shutdown()
-    """
-    await Mentat.get_instance().shutdown()
+async def wait_for(doc_id, timeout=300):
+    return await _get().wait_for_completion(doc_id, timeout=timeout)
 
+def stats():
+    return _get().stats()
 
-def get_status(doc_id: str) -> dict:
-    """Get processing status for a document.
+# Access tracking
+async def track_access(path):
+    return await _get().track_access(path)
 
-    Args:
-        doc_id: Document identifier
+def get_section_heat(doc_id=None, limit=20):
+    return _get().get_section_heat(doc_id=doc_id, limit=limit)
 
-    Returns:
-        Status dict with keys:
-            - doc_id: Document ID
-            - status: "pending" | "processing" | "completed" | "failed" | "not_found"
-            - submitted_at: Timestamp when queued (if in queue)
-            - error: Error message (if failed)
-            - needs_summarization: Whether summarization was requested
+# Collections
+def collection(name):
+    return _get().collection(name)
 
-    Example:
-        status = mentat.get_status(doc_id)
-        print(f"Status: {status['status']}")
-    """
-    return Mentat.get_instance().get_processing_status(doc_id)
+def collections():
+    return _get().list_collections()
 
+def create_collection(name, **kw):
+    return _get().collections_store.create(name, **kw)
 
-async def wait_for(doc_id: str, timeout: float = 300) -> bool:
-    """Wait for a document's background processing to complete.
+def get_collection_info(name):
+    return _get().collections_store.get(name)
 
-    Args:
-        doc_id: Document identifier
-        timeout: Maximum wait time in seconds (default: 300 = 5 minutes)
+def delete_collection(name):
+    return _get().collections_store.delete_collection(name)
 
-    Returns:
-        True if processing completed successfully, False if timeout or failed
-
-    Example:
-        doc_id = await mentat.add("file.pdf", wait=False)
-        completed = await mentat.wait_for(doc_id)
-        if completed:
-            print("Processing complete!")
-    """
-    return await Mentat.get_instance().wait_for_completion(doc_id, timeout=timeout)
-
-
-# --- Content & RAG APIs ---
-
-
-async def add_content(
-    content: str,
-    filename: str,
-    content_type: str = "text/plain",
-    force: bool = False,
-    **kwargs,
-) -> str:
-    """Index raw content without a file on disk. Returns document ID.
-
-    Accepts optional ``source``, ``metadata``, and ``collection`` kwargs.
-    """
-    return await Mentat.get_instance().add_content(
-        content, filename, content_type=content_type, force=force, **kwargs
-    )
-
-
-async def search_grouped(
-    query: str,
-    top_k: int = 5,
-    hybrid: bool = False,
-    toc_only: bool = False,
-    source: Optional[str] = None,
-    with_metadata: Optional[bool] = None,
-    collections: Optional[List[str]] = None,
-) -> List[MentatDocResult]:
-    """Search for relevant content, grouped by document (no duplicate metadata)."""
-    return await Mentat.get_instance().search_grouped(
-        query, top_k=top_k, hybrid=hybrid, toc_only=toc_only,
-        source=source, with_metadata=with_metadata, collections=collections,
-    )
-
-
-async def get_doc_meta(doc_id: str) -> Optional[dict]:
-    """Get lightweight metadata for a document (brief_intro, instructions, toc, etc.)."""
-    return await Mentat.get_instance().get_doc_meta(doc_id)
-
-
-async def read_structured(
-    path: str,
-    sections: Optional[List[str]] = None,
-    include_content: bool = False,
-) -> dict:
-    """Return a structured, token-efficient view of a file (ToC + summaries)."""
-    return await Mentat.get_instance().read_structured(
-        path, sections=sections, include_content=include_content
-    )
-
-
-async def read_segment(
-    doc_id: str,
-    section_path: str,
-    include_summary: bool = True,
-) -> dict:
-    """Read a specific section by doc_id and section name (step 2 of two-step retrieval)."""
-    return await Mentat.get_instance().read_segment(
-        doc_id, section_path, include_summary=include_summary
-    )
-
-
-def get_section_heat(doc_id: Optional[str] = None, limit: int = 20) -> list:
-    """Return hottest sections by decayed score, optionally filtered by doc_id."""
-    return Mentat.get_instance().get_section_heat(doc_id=doc_id, limit=limit)
-
-
-async def track_access(path: str) -> dict:
-    """Record a file access event. Frequently accessed files are auto-indexed."""
-    return await Mentat.get_instance().track_access(path)
-
-
-def create_collection(
-    name: str,
-    metadata: Optional[Dict[str, Any]] = None,
-    watch_paths: Optional[List[str]] = None,
-    watch_ignore: Optional[List[str]] = None,
-    auto_add_sources: Optional[List[str]] = None,
-) -> dict:
-    """Create or update a collection with config. Returns the collection record."""
-    return Mentat.get_instance().collections_store.create(
-        name,
-        metadata=metadata,
-        watch_paths=watch_paths,
-        watch_ignore=watch_ignore,
-        auto_add_sources=auto_add_sources,
-    )
-
-
-def get_collection_info(name: str) -> Optional[dict]:
-    """Get full collection record, or None if not found."""
-    return Mentat.get_instance().collections_store.get(name)
-
-
-def delete_collection(name: str) -> bool:
-    """Delete a collection (not the underlying documents)."""
-    return Mentat.get_instance().collections_store.delete_collection(name)
-
-
-def gc_collections() -> List[str]:
-    """Remove expired collections (based on metadata.ttl). Returns deleted names."""
-    return Mentat.get_instance().collections_store.gc()
-
-
-__all__ = [
-    # Core APIs
-    "add",
-    "add_batch",
-    "search",
-    "search_grouped",
-    "inspect",
-    "get_doc_meta",
-    "probe",
-    "stats",
-    "collection",
-    "collections",
-    "configure",
-    # Background processing APIs
-    "start_processor",
-    "shutdown",
-    "get_status",
-    "wait_for",
-    # Content & RAG APIs
-    "add_content",
-    "read_structured",
-    "read_segment",
-    "track_access",
-    "get_section_heat",
-    # Collection management APIs
-    "create_collection",
-    "get_collection_info",
-    "delete_collection",
-    "gc_collections",
-    # Skill integration
-    "get_tool_schemas",
-    "get_system_prompt",
-    "export_skill",
-    # Classes
-    "Mentat",
-    "MentatConfig",
-    "MentatResult",
-    "MentatDocResult",
-    "ChunkResult",
-    "Collection",
-    "ProbeResult",
-]
+def gc_collections():
+    return _get().collections_store.gc()

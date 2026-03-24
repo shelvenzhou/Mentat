@@ -1,6 +1,11 @@
 import lancedb
 import pyarrow as pa
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, TYPE_CHECKING
+
+from mentat.storage.base import BaseVectorStorage
+
+if TYPE_CHECKING:
+    from mentat.storage.filters import MetadataFilterSet
 
 
 # Schema for document-level metadata (stubs)
@@ -17,7 +22,7 @@ STUBS_SCHEMA = pa.schema(
 )
 
 
-class LanceDBStorage:
+class LanceDBStorage(BaseVectorStorage):
     """Storage layer using LanceDB for vector search and FTS.
 
     Stores document stubs (metadata) and chunks (content + vectors) in
@@ -80,6 +85,11 @@ class LanceDBStorage:
                 pa.field("is_split", pa.bool_(), nullable=True),
                 pa.field("piece_index", pa.int32(), nullable=True),
                 pa.field("total_pieces", pa.int32(), nullable=True),
+                # Metadata fields for pre-filtering (duplicated from stub for speed)
+                pa.field("source", pa.string(), nullable=True),
+                pa.field("indexed_at", pa.float64(), nullable=True),
+                pa.field("file_type", pa.string(), nullable=True),
+                pa.field("metadata_json", pa.string(), nullable=True),
             ]
         )
         self._chunks_table = self.db.create_table("chunks", schema=schema)
@@ -209,12 +219,14 @@ class LanceDBStorage:
         limit: int = 5,
         use_hybrid: bool = False,
         doc_ids: Optional[List[str]] = None,
+        filters: Optional["MetadataFilterSet"] = None,
     ) -> List[Dict[str, Any]]:
         """Search chunks by vector similarity, optionally with hybrid (FTS + vector) search.
 
         Args:
             doc_ids: If provided, restrict search to chunks belonging to these documents.
                      Uses LanceDB pre-filtering for efficient scoped search.
+            filters: Optional MetadataFilterSet for metadata pre-filtering.
         """
         if self.chunks_table is None:
             return []
@@ -230,9 +242,16 @@ class LanceDBStorage:
             # Pure vector search
             q = self.chunks_table.search(query_vector)
 
+        # Build WHERE clause from doc_ids and metadata filters
+        where_parts: List[str] = []
         if doc_ids is not None:
             ids_str = ", ".join(f"'{d}'" for d in doc_ids)
-            q = q.where(f"doc_id IN ({ids_str})")
+            where_parts.append(f"doc_id IN ({ids_str})")
+        if filters is not None and not filters.is_empty():
+            where_parts.append(filters.to_lance_sql())
+
+        if where_parts:
+            q = q.where(" AND ".join(where_parts))
 
         return q.limit(limit).to_list()
 

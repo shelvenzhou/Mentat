@@ -11,7 +11,7 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import estimate_tokens
-from mentat.probes.instruction_templates import (
+from mentat.librarian.instruction_templates import (
     CSV_BRIEF_INTRO,
     CSV_INSTRUCTIONS,
     CSV_SAMPLING_NOTE_FULL,

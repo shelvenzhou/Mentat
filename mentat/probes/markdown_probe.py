@@ -10,7 +10,7 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import estimate_tokens, extract_preview, SMALL_FILE_TOKENS
-from mentat.probes.instruction_templates import (
+from mentat.librarian.instruction_templates import (
     MARKDOWN_BRIEF_INTRO,
     MARKDOWN_INSTRUCTIONS,
 )

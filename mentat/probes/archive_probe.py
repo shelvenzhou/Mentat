@@ -13,7 +13,7 @@ from mentat.probes.base import (
     Chunk,
 )
 from mentat.probes._utils import format_size
-from mentat.probes.instruction_templates import (
+from mentat.librarian.instruction_templates import (
     ARCHIVE_BRIEF_INTRO,
     ARCHIVE_INSTRUCTIONS,
     ARCHIVE_EXTRACTION_ZIP,

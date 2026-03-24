@@ -85,8 +85,13 @@ def build_chunk_records(
     vectors: List[List[float]],
     summaries: List[str],
     chunk_mapping: ChunkMapping,
+    extra_fields: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Build storage-ready chunk records from vectors + mapping.
+
+    Args:
+        extra_fields: Optional dict of fields to include in every record
+            (e.g. source, indexed_at, file_type, metadata_json for filtering).
 
     Returns a list of dicts ready for ``LanceDBStorage.add_chunks``.
     """
@@ -110,7 +115,7 @@ def build_chunk_records(
             content = chunk.content[start_char:end_char]
             chunk_id = f"{doc_id}_{chunk.index}_p{piece_idx}"
 
-        records.append({
+        record = {
             "chunk_id": chunk_id,
             "doc_id": doc_id,
             "filename": filename,
@@ -122,7 +127,10 @@ def build_chunk_records(
             "is_split": total_pieces > 1,
             "piece_index": piece_idx if total_pieces > 1 else None,
             "total_pieces": total_pieces if total_pieces > 1 else None,
-        })
+        }
+        if extra_fields:
+            record.update(extra_fields)
+        records.append(record)
 
     return records
 
@@ -148,6 +156,7 @@ class ProcessingTask:
     status: str = "pending"  # pending | processing | completed | failed
     error: Optional[str] = None
     needs_summarization: bool = False
+    chunk_extra_fields: Optional[Dict[str, Any]] = None
 
 
 class ProcessingQueue:
@@ -498,7 +507,8 @@ class BackgroundProcessor:
             chunk_mapping = [(i, 0, 1, 0, len(c.content)) for i, c in enumerate(chunks)]
 
         chunk_records = build_chunk_records(
-            doc_id, filename, chunks, vectors, summaries, chunk_mapping
+            doc_id, filename, chunks, vectors, summaries, chunk_mapping,
+            extra_fields=task.chunk_extra_fields,
         )
 
         logger.debug(

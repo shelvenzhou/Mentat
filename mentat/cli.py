@@ -10,6 +10,7 @@ import click
 warnings.filterwarnings("ignore", message="coroutine.*was never awaited")
 
 from mentat.core.hub import Mentat
+from mentat import service
 
 
 @click.group(invoke_without_command=True)
@@ -55,17 +56,22 @@ def help(ctx):
     _print_help(ctx)
 
 
-def _resolve_doc_id(m: Mentat, prefix: str) -> str:
-    """Resolve a doc ID prefix to full ID, or exit with a friendly error."""
+def _resolve_doc_id(m_or_prefix, prefix=None) -> str:
+    """Resolve a doc ID prefix to full ID, or exit with a friendly error.
+
+    Accepts either (mentat, prefix) for backward compatibility or just (prefix,).
+    """
+    if prefix is None:
+        # Called as _resolve_doc_id(prefix)
+        prefix = m_or_prefix
     try:
-        full_id = m.storage.resolve_doc_id(prefix)
+        return service.resolve_doc_id(prefix)
     except ValueError as e:
         click.echo(f"Error: {e}")
         raise SystemExit(1)
-    if full_id is None:
-        click.echo(f"Document not found: {prefix}")
+    except KeyError as e:
+        click.echo(str(e))
         raise SystemExit(1)
-    return full_id
 
 
 @cli.command()
@@ -468,8 +474,7 @@ def probe(file_paths, fmt):
 @cli.command()
 def stats():
     """Show system statistics."""
-    m = Mentat()
-    s = m.stats()
+    s = service.get_stats()
     click.echo(f"\n{'═' * 40}")
     click.echo(f"  Mentat System Statistics")
     click.echo(f"{'─' * 40}")
@@ -503,11 +508,7 @@ def list_docs(source, fmt):
         mentat list --source read
         mentat list --format json
     """
-    m = Mentat()
-    docs = m.storage.list_docs()
-
-    if source:
-        docs = [d for d in docs if d.get("source") == source]
+    docs = service.list_docs(source=source)
 
     if not docs:
         click.echo("No documents found.")

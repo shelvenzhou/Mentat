@@ -5,7 +5,7 @@ and that all placeholders can be filled with example data.
 """
 
 import re
-from mentat.probes import instruction_templates as tpl
+from mentat.librarian import instruction_templates as tpl
 
 
 def extract_placeholders(template: str) -> set:

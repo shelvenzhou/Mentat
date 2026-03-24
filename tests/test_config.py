@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 class TestMentatConfig:
     def test_defaults(self):
-        from mentat.core.hub import MentatConfig
+        from mentat.core.models import MentatConfig
 
         # Remove all MENTAT_ env vars so .env doesn't interfere
         mentat_keys = [k for k in os.environ if k.startswith("MENTAT_")]
@@ -23,7 +23,7 @@ class TestMentatConfig:
         assert c.embedding_api_base == ""
 
     def test_explicit_args_override_defaults(self):
-        from mentat.core.hub import MentatConfig
+        from mentat.core.models import MentatConfig
 
         c = MentatConfig(
             summary_model="anthropic/claude-sonnet-4-5-20250929",
@@ -37,7 +37,7 @@ class TestMentatConfig:
         assert c.summary_api_base == "http://localhost:8080"
 
     def test_env_vars_override_defaults(self):
-        from mentat.core.hub import MentatConfig
+        from mentat.core.models import MentatConfig
 
         env = {
             "MENTAT_DB_PATH": "/tmp/test_db",
@@ -62,7 +62,7 @@ class TestMentatConfig:
         assert c.embedding_api_base == "http://embed:9000"
 
     def test_explicit_args_beat_env_vars(self):
-        from mentat.core.hub import MentatConfig
+        from mentat.core.models import MentatConfig
 
         env = {"MENTAT_SUMMARY_MODEL": "env-model"}
         with patch.dict(os.environ, env, clear=False):

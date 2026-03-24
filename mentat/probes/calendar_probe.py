@@ -8,7 +8,7 @@ from mentat.probes.base import (
     TocEntry,
     Chunk,
 )
-from mentat.probes.instruction_templates import (
+from mentat.librarian.instruction_templates import (
     CALENDAR_BRIEF_INTRO,
     CALENDAR_INSTRUCTIONS,
 )
