@@ -8,6 +8,7 @@ This document tracks features needed to complete Mentat's integration as OpenCla
 - [x] **#21** `read_segment(doc_id, section_path)` — Targeted section reading by doc_id + section name
 - [x] **#23** Heat map persistence — `heat_map.json` saved with debounced writes, loaded on init, flushed on shutdown
 - [x] **#31** Skill integration layer — `mentat/skill.py` with OpenAI tool schemas, system prompt, `GET /skill` endpoint, `mentat skill` CLI
+- [x] **#32** Path-based dedup — `PathIndex` replaces old documents when same file path is re-indexed with changed content (stubs + chunks cleaned up). `_JsonMap` base class shared with `ContentHashCache`. `add_content()` uses synthetic `__content__:{filename}` keys for URL/content dedup.
 
 ## P1 — Should Have
 
@@ -70,6 +71,16 @@ This document tracks features needed to complete Mentat's integration as OpenCla
 **Goal**: Extract timestamps from filenames and content (e.g., `2024-02.md` → date context).
 **Context**: Design 3.0 chunk schema is `{content, toc_path, timestamp}`. Currently no temporal metadata.
 **Approach**: Add regex-based date extraction in probes, store in chunk.metadata.
+
+### #33 Chunk-Level Diff on Re-Index
+**Goal**: When a file is re-indexed with changed content, only re-embed changed chunks instead of full re-processing.
+**Context**: Current path-based dedup (#32) deletes the entire old document and re-indexes from scratch. For large files where only a few lines changed, this wastes embedding API calls on unchanged chunks.
+**Approach**:
+- After probing the new version, compare new chunk hashes against old chunk hashes (stored in LanceDB)
+- Keep unchanged chunks (same hash → reuse existing vectors)
+- Only embed new/modified chunks
+- Delete stale chunks that no longer exist in the new version
+- Estimated savings: for a 100-chunk file with 5 changed lines, ~95% fewer embedding calls
 
 ### #18 Fine-Grained Processing Status
 **Goal**: Distinguish "embedding done but summary pending" vs "both in progress" in status API.

@@ -48,7 +48,8 @@ Uses `litellm` for all LLM calls. Takes only `ProbeResult` as input — never re
 ### Layer 3 — Storage (`mentat/storage/`)
 - `LanceDBStorage` (`vector_db.py`) — separate tables for document stubs and chunks. Lazy vector table creation (dimension auto-detected from first embedding). BTREE scalar index on `doc_id` for collection filtering.
 - `LocalFileStore` (`file_store.py`) — raw file copies for downstream access.
-- `ContentHashCache` (`cache.py`) — SHA-256 deduplication (JSON-backed).
+- `ContentHashCache` (`cache.py`) — SHA-256 deduplication (JSON-backed). Shares `_JsonMap` base class with `PathIndex`.
+- `PathIndex` (`cache.py`) — path→doc_id mapping for file identity tracking. When the same path is re-indexed with changed content, the old document (stubs + chunks) is deleted before creating the new one. Synthetic keys (`__content__:{filename}`) support `add_content()` dedup. Inherits `_JsonMap` base.
 - `CollectionStore` (`collections.py`) — named doc groups as JSON references (no vector duplication).
 
 ### Orchestrator (`mentat/core/hub.py`)

@@ -63,6 +63,7 @@ See [OPTIMIZATIONS.md](OPTIMIZATIONS.md) for detailed performance analysis.
 - **LanceDB**: Separate tables for document stubs (metadata + instructions) and chunk-level vectors (with per-chunk summaries).
 - **FileStore**: Raw file storage — originals are always kept for downstream detailed access.
 - **ContentHashCache**: SHA-256 deduplication to skip re-indexing identical files.
+- **PathIndex**: Path-based identity tracking — re-indexing the same file path with changed content automatically replaces the old document (stubs + chunks), preventing stale search results.
 - **CollectionStore**: Named doc groups as lightweight JSON references with opaque metadata, watch configs, auto-routing rules, and TTL-based GC.
 
 ### Layer 2: The Probes (Semantic Fingerprinting)
@@ -451,6 +452,7 @@ uv run pytest tests/test_queue_perf.py -v    # Queue throughput & latency
 | `test_config.py`         | Config loading and env var precedence                                                 |
 | `test_vector_db.py`      | LanceDB storage: stubs, chunks, search, hybrid, collections                           |
 | `test_cache.py`          | Content hash cache deduplication                                                      |
+| `test_path_dedup.py`     | PathIndex unit tests + integration: path-based replacement on content change           |
 | `test_collections.py`    | CollectionStore: CRUD, metadata, watch config, auto-routing, persistence, GC          |
 | `test_collection_search.py` | Auto-routing on add, multi-collection search, Collection class integration         |
 | `test_watcher.py`        | File watcher: SHA-256 dedup, filter, sync, throttle, handle_change                    |
