@@ -189,7 +189,7 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
     app = FastAPI(
         title="Mentat",
         description="Semantic file intelligence API",
-        version="0.2.0",
+        version="0.1.0",
         lifespan=lifespan,
     )
 

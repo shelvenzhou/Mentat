@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from mentat.core.models import MentatResult, MentatDocResult, ChunkResult
+from mentat.probes.base import TocEntry
 
 if TYPE_CHECKING:
     from mentat.core.hub import Mentat
@@ -83,6 +84,21 @@ class Searcher:
                 stub_cache[did] = m.storage.get_stub(did) or {}
 
         return raw_results, stub_cache, query
+
+    @staticmethod
+    def _parse_toc_entries(stub: Dict, with_metadata: bool) -> List[TocEntry]:
+        """Extract TocEntry list from a stub's probe_json."""
+        if not with_metadata:
+            return []
+        probe_json_str = stub.get("probe_json", "")
+        if not probe_json_str:
+            return []
+        try:
+            probe_data = json.loads(probe_json_str)
+            raw = probe_data.get("structure", {}).get("toc", [])
+            return [TocEntry(**e) if isinstance(e, dict) else e for e in raw]
+        except (json.JSONDecodeError, TypeError):
+            return []
 
     def _get_status_note(self, doc_id: str, has_active_tasks: bool) -> str:
         """Return processing status note for a document (empty if not active)."""
@@ -259,16 +275,7 @@ class Searcher:
             status_note = self._get_status_note(did, has_active_tasks)
             instructions = base_instructions + status_note
 
-            # Extract ToC entries from probe_json (only when metadata requested)
-            toc_entries: List[dict] = []
-            if with_metadata:
-                probe_json_str = stub.get("probe_json", "")
-                if probe_json_str:
-                    try:
-                        probe_data = json.loads(probe_json_str)
-                        toc_entries = probe_data.get("structure", {}).get("toc", [])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+            toc_entries = self._parse_toc_entries(stub, with_metadata)
 
             # Build chunk list (empty in toc_only mode)
             chunk_results: List[ChunkResult] = []
@@ -347,16 +354,7 @@ class Searcher:
         for doc_id, group in doc_groups.items():
             stub = stub_cache.get(doc_id, {})
 
-            # Extract ToC entries from probe_json (only when metadata requested)
-            toc_entries: List[dict] = []
-            if with_metadata:
-                probe_json_str = stub.get("probe_json", "")
-                if probe_json_str:
-                    try:
-                        probe_data = json.loads(probe_json_str)
-                        toc_entries = probe_data.get("structure", {}).get("toc", [])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+            toc_entries = self._parse_toc_entries(stub, with_metadata)
 
             matched_sections = sorted(group["sections"])
             base_instructions = stub.get("instruction", "") if with_metadata else ""

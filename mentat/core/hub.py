@@ -11,8 +11,6 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from dotenv import load_dotenv
-
 from mentat.core.models import (
     MentatResult,
     MentatDocResult,
@@ -36,11 +34,6 @@ from mentat.storage.file_store import LocalFileStore
 from mentat.storage.cache import ContentHashCache, PathIndex
 from mentat.storage.collections import CollectionStore
 
-# Load .env at import time so all env vars (including API keys for litellm)
-# are available before any LLM/embedding calls.
-load_dotenv()
-
-
 class Mentat:
     """Core orchestrator for the Mentat system.
 
@@ -54,6 +47,9 @@ class Mentat:
     _instance: Optional["Mentat"] = None
 
     def __init__(self, config: Optional[MentatConfig] = None):
+        from dotenv import load_dotenv
+        load_dotenv()
+
         self.config = config or MentatConfig()
         self.logger = logging.getLogger("mentat")
 

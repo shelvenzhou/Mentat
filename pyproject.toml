@@ -1,28 +1,37 @@
 [project]
-name = "mentat"
+name = "mentat-sr"
 version = "0.1.0"
-description = "Pure logic. Strategic retrieval. Next-gen Agentic RAG."
+description = "Strategic Retrieval for LLM agents. Structure-aware document intelligence with two-step retrieval protocol."
 readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "Shelven Zhou"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Indexing",
+    "Typing :: Typed",
+]
 dependencies = [
     "click>=8.3.1",
     "python-dotenv>=1.0.0",
-    "icalendar>=6.0.0",
     "lancedb>=0.29.2",
     "litellm>=1.81.9",
     "openai>=2.18.0",
     "pandas>=2.3.3",
-    "Pillow>=10.0.0",
     "pydantic>=2.12.5",
     "pymupdf>=1.26.7",
     "pypdf>=6.7.0",
-    "python-docx>=1.1.0",
     "python-magic>=0.4.27",
-    "python-pptx>=1.0.0",
     "pyyaml>=6.0.3",
     "pyyaml-include>=2.2",
     "tomli>=2.0.0; python_version < '3.11'",
-    "trafilatura>=2.0.0",
     "tree-sitter>=0.21.3",
     "tree-sitter-html>=0.23.2",
     "tree-sitter-javascript>=0.25.0",
@@ -33,14 +42,38 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
 ]
 
+[project.optional-dependencies]
+image = ["Pillow>=10.0.0"]
+office = ["python-docx>=1.1.0", "python-pptx>=1.0.0"]
+calendar = ["icalendar>=6.0.0"]
+web = ["trafilatura>=2.0.0"]
+all = [
+    "Pillow>=10.0.0",
+    "python-docx>=1.1.0",
+    "python-pptx>=1.0.0",
+    "icalendar>=6.0.0",
+    "trafilatura>=2.0.0",
+]
+
 [project.scripts]
 mentat = "mentat.cli:cli"
 
+[project.urls]
+Homepage = "https://github.com/shelvenzhou/mentat-sr"
+Repository = "https://github.com/shelvenzhou/mentat-sr"
+Issues = "https://github.com/shelvenzhou/mentat-sr/issues"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 
 [dependency-groups]
 dev = [
+    "Pillow>=10.0.0",
+    "python-docx>=1.1.0",
+    "python-pptx>=1.0.0",
+    "icalendar>=6.0.0",
+    "trafilatura>=2.0.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.0.0",
 ]

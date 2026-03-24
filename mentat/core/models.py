@@ -5,10 +5,12 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from mentat.core.hub import Mentat
+
+from mentat.probes.base import TocEntry
 
 
 class MentatResult(BaseModel):
@@ -23,9 +25,9 @@ class MentatResult(BaseModel):
     brief_intro: str = ""
     instructions: str = ""
     score: float = 0.0
-    toc_entries: List[dict] = []  # Populated in toc_only search mode
-    source: str = ""  # Origin tag, e.g. "web_fetch", "composio:gmail"
-    metadata: Dict[str, Any] = {}  # Arbitrary metadata from caller
+    toc_entries: List[TocEntry] = Field(default_factory=list)
+    source: str = ""
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ChunkResult(BaseModel):
@@ -47,10 +49,10 @@ class MentatDocResult(BaseModel):
     brief_intro: str = ""
     instructions: str = ""
     source: str = ""
-    metadata: Dict[str, Any] = {}
-    toc_entries: List[dict] = []
-    score: float = 0.0  # Best (min distance) score among chunks
-    chunks: List[ChunkResult] = []
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    toc_entries: List[TocEntry] = Field(default_factory=list)
+    score: float = 0.0
+    chunks: List[ChunkResult] = Field(default_factory=list)
 
 
 @dataclass
