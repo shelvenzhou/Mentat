@@ -28,7 +28,7 @@ from mentat.probes._utils import estimate_tokens
 from mentat.librarian.engine import Librarian
 from mentat.storage.vector_db import LanceDBStorage
 from mentat.storage.file_store import LocalFileStore
-from mentat.storage.cache import ContentHashCache
+from mentat.storage.cache import ContentHashCache, PathIndex
 from mentat.storage.collections import CollectionStore
 from mentat.adaptors import BaseAdaptor
 
@@ -259,6 +259,7 @@ class Mentat:
         self.storage = LanceDBStorage(db_path=self.config.db_path)
         self.file_store = LocalFileStore(storage_dir=self.config.storage_dir)
         self.cache = ContentHashCache(cache_dir=self.config.db_path)
+        self.path_index = PathIndex(cache_dir=self.config.db_path)
 
         # Layer 3: Librarian
         self.librarian = Librarian(
@@ -352,6 +353,7 @@ class Mentat:
         metadata: Optional[Dict[str, Any]] = None,
         _logical_filename: Optional[str] = None,
         collection: Optional[str] = None,
+        _skip_path_dedup: bool = False,
     ) -> str:
         """Index a file with async background processing.
 
@@ -391,6 +393,8 @@ class Mentat:
                 print(
                     f"[Cache] Already indexed as {cached_id}. Use force=True to re-index."
                 )
+                # Update path index (may be missing for docs indexed before this feature)
+                self.path_index.put(path, cached_id)
                 # Still route to collections even on cache hit
                 if source:
                     for coll_name in self.collections_store.get_auto_route_targets(source):
@@ -398,6 +402,17 @@ class Mentat:
                 if collection:
                     self.collections_store.add_doc(collection, cached_id)
                 return cached_id
+
+        # Path-based dedup: if this path was previously indexed with different
+        # content, clean up the old document before creating a new one.
+        # Skipped when called from add_content() which handles its own dedup.
+        if not _skip_path_dedup:
+            old_doc_id = self.path_index.get(path)
+            if old_doc_id:
+                self.logger.info(f"Path {path} was previously indexed as {old_doc_id}, replacing.")
+                self.storage.delete_doc(old_doc_id)
+                self.cache.remove(old_doc_id)
+                self.path_index.remove(old_doc_id)
 
         doc_id = str(uuid.uuid4())
         filename = _logical_filename or Path(path).name
@@ -449,8 +464,9 @@ class Mentat:
         # Raw file storage — save immediately for downstream access
         self.file_store.save(path, doc_id)
 
-        # Record in content hash cache
+        # Record in content hash cache and path index
         self.cache.put(path, doc_id)
+        self.path_index.put(path, doc_id)
 
         # Telemetry for immediate return
         original_size = os.path.getsize(path)
@@ -1421,6 +1437,18 @@ class Mentat:
                     self.collections_store.add_doc(collection, cached_id)
                 return cached_id
 
+        # Path-based dedup for content: use a synthetic key so that the same
+        # logical filename replaces its previous version when content changes.
+        content_path_key = f"__content__:{filename}"
+        old_doc_id = self.path_index.get(content_path_key)
+        if old_doc_id:
+            self.logger.info(
+                f"Content filename {filename} was previously indexed as {old_doc_id}, replacing."
+            )
+            self.storage.delete_doc(old_doc_id)
+            self.cache.remove(old_doc_id)
+            self.path_index.remove(old_doc_id)
+
         # Write content to a temp file so probes can read it.
         # Validate the suffix against registered probes; fall back to .md
         # (markdown probe handles plain text well) if no probe recognises it.
@@ -1446,9 +1474,12 @@ class Mentat:
                 metadata=metadata,
                 _logical_filename=filename,
                 collection=collection,
+                _skip_path_dedup=True,
             )
             # Also store under the content hash for future dedup
             self.cache.put_hash(content_hash, doc_id)
+            # Record content path key for path-based dedup on future updates
+            self.path_index.put(content_path_key, doc_id)
             return doc_id
         finally:
             # Temp file can be cleaned up; raw file is stored by add()

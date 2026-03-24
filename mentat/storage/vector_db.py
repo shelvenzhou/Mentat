@@ -315,6 +315,18 @@ class LanceDBStorage:
         except Exception:
             return 0
 
+    def delete_doc(self, doc_id: str):
+        """Delete a document's stub and all its chunks."""
+        try:
+            self.stubs_table.delete(f"id = '{doc_id}'")
+        except Exception:
+            pass
+        if self.chunks_table is not None:
+            try:
+                self.chunks_table.delete(f"doc_id = '{doc_id}'")
+            except Exception:
+                pass
+
     def list_docs(self) -> List[Dict[str, Any]]:
         """List all indexed document stubs."""
         try:

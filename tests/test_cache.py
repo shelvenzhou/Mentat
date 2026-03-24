@@ -117,7 +117,7 @@ class TestContentHashCache:
         assert c2.get(different_file) == "doc-2"
 
     def test_corrupted_file_starts_fresh(self, cache_dir):
-        path = ContentHashCache(cache_dir=cache_dir)._cache_path
+        path = ContentHashCache(cache_dir=cache_dir)._path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{invalid json")
 

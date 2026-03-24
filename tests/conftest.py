@@ -87,6 +87,10 @@ class FakeStorage:
     def has_chunks(self, doc_id):
         return any(r.get("doc_id") == doc_id for r in self._chunks)
 
+    def delete_doc(self, doc_id):
+        self._stubs.pop(doc_id, None)
+        self._chunks = [r for r in self._chunks if r.get("doc_id") != doc_id]
+
     def list_docs(self):
         return list(self._stubs.values())
 
