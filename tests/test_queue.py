@@ -217,9 +217,10 @@ class TestBackgroundProcessor:
     """Tests for BackgroundProcessor class."""
 
     @pytest.fixture
-    def mock_mentat(self):
+    def mock_mentat(self, tmp_path):
         """Create a mock Mentat instance."""
         mentat = Mock()
+        mentat.config.db_path = str(tmp_path / "db")
         mentat.embeddings = Mock()
         mentat.embeddings.embed_batch = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
         mentat.librarian = Mock()
@@ -464,9 +465,10 @@ class TestIntegration:
     """Integration tests for the full queue workflow."""
 
     @pytest.fixture
-    def mock_mentat_full(self):
+    def mock_mentat_full(self, tmp_path):
         """Create a full mock Mentat instance with storage."""
         mentat = Mock()
+        mentat.config.db_path = str(tmp_path / "db")
         mentat.embeddings = Mock()
         mentat.embeddings.embed_batch = AsyncMock(
             return_value=[[0.1, 0.2, 0.3] for _ in range(3)]

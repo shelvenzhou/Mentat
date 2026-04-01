@@ -20,7 +20,9 @@ def _probe_result() -> ProbeResult:
 
 
 def _mock_mentat(process_delay: float = 0.0):
+    import tempfile
     m = Mock()
+    m.config.db_path = tempfile.mkdtemp(prefix="mentat_perf_")
 
     async def _embed(texts):
         if process_delay:

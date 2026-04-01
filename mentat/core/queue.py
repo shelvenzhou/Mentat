@@ -3,12 +3,19 @@
 This module provides an in-memory priority queue system for processing
 document chunks (embeddings and summarization) in the background, allowing
 immediate return from add() operations while enrichment happens asynchronously.
+
+Includes persistent failure tracking: when embedding fails, the doc_id and
+metadata are recorded to ``failed_tasks.json`` so orphan stubs (stubs without
+chunks) can be re-queued on the next startup.
 """
 
 import asyncio
+import json as json_module
 import logging
+import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from mentat.probes.base import Chunk, ProbeResult
@@ -17,6 +24,83 @@ if TYPE_CHECKING:
     from mentat.core.hub import Mentat
 
 logger = logging.getLogger("mentat.queue")
+
+# Maximum number of times a failed task will be retried across restarts
+MAX_RETRIES = 3
+
+_FAILED_TASKS_FILENAME = "failed_tasks.json"
+
+
+class FailedTaskStore:
+    """Persistent store for failed embedding tasks.
+
+    Records are kept in ``{db_path}/failed_tasks.json`` so that orphan stubs
+    (stubs stored but chunks never written) can be identified and re-queued
+    on the next startup.
+
+    Each entry tracks retry count to avoid infinite retry loops.
+    """
+
+    def __init__(self, db_path: str):
+        self._path = Path(db_path) / _FAILED_TASKS_FILENAME
+        self._data: Dict[str, Dict[str, Any]] = self._load()
+
+    def _load(self) -> Dict[str, Dict[str, Any]]:
+        if self._path.exists():
+            try:
+                return json_module.loads(self._path.read_text())
+            except (json_module.JSONDecodeError, OSError):
+                logger.warning("Failed to load %s, starting fresh", _FAILED_TASKS_FILENAME)
+                return {}
+        return {}
+
+    def _save(self):
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_suffix(".tmp")
+        try:
+            tmp.write_text(json_module.dumps(self._data, indent=2))
+            os.replace(str(tmp), str(self._path))
+        except Exception:
+            logger.exception("Failed to save %s", _FAILED_TASKS_FILENAME)
+            tmp.unlink(missing_ok=True)
+
+    def record_failure(self, doc_id: str, error: str, source: str = "", filename: str = ""):
+        """Record a failed embedding task."""
+        existing = self._data.get(doc_id, {})
+        self._data[doc_id] = {
+            "retry_count": existing.get("retry_count", 0) + 1,
+            "last_error": error,
+            "last_retry_at": time.time(),
+            "first_failed_at": existing.get("first_failed_at", time.time()),
+            "source": source or existing.get("source", ""),
+            "filename": filename or existing.get("filename", ""),
+        }
+        self._save()
+
+    def record_success(self, doc_id: str):
+        """Remove a doc_id from the failed store on successful processing."""
+        if doc_id in self._data:
+            del self._data[doc_id]
+            self._save()
+
+    def get(self, doc_id: str) -> Optional[Dict[str, Any]]:
+        return self._data.get(doc_id)
+
+    def get_retry_count(self, doc_id: str) -> int:
+        entry = self._data.get(doc_id)
+        return entry.get("retry_count", 0) if entry else 0
+
+    def is_exhausted(self, doc_id: str) -> bool:
+        """True if doc_id has exceeded MAX_RETRIES."""
+        return self.get_retry_count(doc_id) >= MAX_RETRIES
+
+    def all_failed(self) -> Dict[str, Dict[str, Any]]:
+        return dict(self._data)
+
+    def remove(self, doc_id: str):
+        if doc_id in self._data:
+            del self._data[doc_id]
+            self._save()
 
 
 # ── Shared chunk preparation utilities ──────────────────────────────────────
@@ -331,23 +415,28 @@ class BackgroundProcessor:
     3. Optionally generates summaries for chunks
     4. Stores chunks with vectors and summaries in the database
 
+    On startup, scans for orphan stubs (stubs stored but chunks never written
+    due to prior embedding failures or crashes) and re-queues them.
+
     Attributes:
         mentat: Parent Mentat instance (provides storage, librarian, embeddings)
         queue: ProcessingQueue instance
         max_concurrent: Maximum number of documents to process simultaneously
+        failed_store: Persistent store for tracking failed tasks across restarts
     """
 
     def __init__(self, mentat: "Mentat", max_concurrent: int = 3):
         self.mentat = mentat
         self.queue = ProcessingQueue()
         self.max_concurrent = max_concurrent
+        self.failed_store = FailedTaskStore(mentat.config.db_path)
         self._running = False
         self._worker_task: Optional[asyncio.Task] = None
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._active_tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
-        """Start the background processing worker."""
+        """Start the background processing worker and recover orphan stubs."""
         if self._running:
             logger.warning("Background processor already running")
             return
@@ -357,6 +446,19 @@ class BackgroundProcessor:
         logger.info(
             f"Started background processor (max_concurrent={self.max_concurrent})"
         )
+
+        # Recover orphan stubs in background after a brief delay to avoid
+        # racing with in-flight add() calls during startup.
+        asyncio.create_task(
+            self._delayed_orphan_recovery(),
+            name="processor:orphan_recovery",
+        )
+
+    async def _delayed_orphan_recovery(self):
+        """Wait briefly then run orphan recovery."""
+        await asyncio.sleep(5.0)
+        if self._running:
+            await self._recover_orphan_stubs()
 
     async def stop(self) -> None:
         """Stop the background processor gracefully.
@@ -375,6 +477,79 @@ class BackgroundProcessor:
             await asyncio.gather(*self._active_tasks, return_exceptions=True)
 
         logger.info("Background processor stopped")
+
+    async def _recover_orphan_stubs(self) -> None:
+        """Find stubs without chunks and re-queue them for embedding.
+
+        Called once on startup.  Stubs are created synchronously during
+        ``add()`` but chunk embeddings happen asynchronously — if the process
+        crashed or embedding failed, orphan stubs remain searchable by metadata
+        only.  This method recovers them.
+        """
+        storage = self.mentat.storage
+        try:
+            all_stubs = storage.list_docs()
+        except Exception:
+            logger.exception("Orphan recovery: failed to list stubs")
+            return
+
+        recovered = 0
+        exhausted = 0
+        for stub in all_stubs:
+            doc_id = stub.get("id")
+            if not doc_id:
+                continue
+
+            # Already has chunks — nothing to recover
+            if storage.has_chunks(doc_id):
+                # Clear from failed store if it was previously tracked
+                self.failed_store.record_success(doc_id)
+                continue
+
+            # Check retry limit
+            if self.failed_store.is_exhausted(doc_id):
+                exhausted += 1
+                continue
+
+            # Reconstruct ProcessingTask from stored probe_json
+            probe_json = stub.get("probe_json", "")
+            if not probe_json:
+                logger.warning("Orphan recovery: no probe_json for %s, skipping", doc_id)
+                continue
+
+            try:
+                probe_result = ProbeResult.model_validate_json(probe_json)
+                probe_result.doc_id = doc_id
+                probe_result.filename = stub.get("filename", "unknown")
+            except Exception:
+                logger.exception("Orphan recovery: failed to parse probe_json for %s", doc_id)
+                continue
+
+            # Build chunk extra fields from stub metadata
+            source = stub.get("source", "")
+            metadata_json = stub.get("metadata_json", "{}")
+            chunk_extra = {
+                "source": source,
+                "indexed_at": time.time(),
+                "file_type": probe_result.file_type or "",
+                "metadata_json": metadata_json,
+            }
+
+            task = ProcessingTask(
+                doc_id=doc_id,
+                probe_result=probe_result,
+                priority=-1,  # Lower than new tasks
+                needs_summarization=False,
+                chunk_extra_fields=chunk_extra,
+            )
+            await self.queue.submit(task)
+            recovered += 1
+
+        if recovered or exhausted:
+            logger.info(
+                "Orphan recovery: re-queued %d stub(s), %d exhausted (max retries reached)",
+                recovered, exhausted,
+            )
 
     def _has_unfinished_tasks(self) -> bool:
         """Return True if queue still has pending/processing work."""
@@ -463,6 +638,8 @@ class BackgroundProcessor:
                 f"Completed task {task.doc_id} in {duration:.2f}s "
                 f"({len(vectors)} chunks)"
             )
+            # Clear from failed store on success
+            self.failed_store.record_success(task.doc_id)
 
         except Exception as e:
             task.status = "failed"
@@ -470,6 +647,13 @@ class BackgroundProcessor:
             logger.error(
                 f"Processing failed for {task.doc_id}: {e}",
                 exc_info=True
+            )
+            # Persist failure for retry on next startup
+            self.failed_store.record_failure(
+                task.doc_id,
+                error=str(e),
+                source=task.chunk_extra_fields.get("source", "") if task.chunk_extra_fields else "",
+                filename=task.probe_result.filename or "",
             )
 
     async def _embed_chunks(self, task: ProcessingTask) -> List[List[float]]:

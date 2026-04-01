@@ -231,6 +231,10 @@ class MentatWatcher:
 
         Files with persisted offsets resume from where they left off.
         Files without offsets are processed from byte 0.
+
+        Also verifies that docs from previous offsets actually have chunks
+        in the vector DB.  If they don't (e.g. embedding failed), the
+        offset is rolled back so the content is re-indexed.
         """
         config = self._configs.get(collection_name, {})
         recent_days = config.get("initial_scan_recent_days")
@@ -247,8 +251,9 @@ class MentatWatcher:
                     continue
                 path_str = str(file_path)
 
-                # If we have a persisted offset, this file was partially indexed
+                # If we have a persisted offset, verify prior chunks exist
                 if path_str in self._offsets:
+                    self._verify_offset_integrity(collection_name, path_str)
                     await self._handle_append_change(collection_name, path_str)
                     count += 1
                     continue
@@ -342,6 +347,54 @@ class MentatWatcher:
             pass
         except Exception:
             logger.exception("Watcher for %r crashed", collection_name)
+
+    # ── Offset integrity ──────────────────────────────────────────────
+
+    def _verify_offset_integrity(self, collection_name: str, path: str):
+        """Check that prior append-indexed segments actually have chunks.
+
+        If the vector DB is empty (cold start after DB deletion) but
+        ``watcher_offsets.json`` survived, or if prior embedding failed,
+        the offset is stale.  Roll it back to 0 so the full file is
+        re-indexed on the next ``_handle_append_change`` call.
+        """
+        storage = self._mentat.storage
+        coll_store = self._mentat.collections_store
+        coll = coll_store.get(collection_name)
+        if coll is None:
+            return
+
+        doc_ids = coll.get("doc_ids", [])
+        if not doc_ids:
+            # Collection has no docs at all — offsets are certainly stale
+            old_offset = self._offsets.get(path, 0)
+            if old_offset > 0:
+                logger.warning(
+                    "Offset integrity: collection %r is empty but offset for %s is %d — resetting to 0",
+                    collection_name, Path(path).name, old_offset,
+                )
+                self._offsets[path] = 0
+            return
+
+        # Check whether any doc from this file actually has chunks.
+        # Watcher-created docs use logical filenames like "session.jsonl@{offset}".
+        stem = Path(path).name
+        has_any_chunks = False
+        for doc_id in doc_ids:
+            stub = storage.get_stub(doc_id)
+            if stub and stub.get("filename", "").startswith(stem):
+                if storage.has_chunks(doc_id):
+                    has_any_chunks = True
+                    break
+
+        if not has_any_chunks:
+            old_offset = self._offsets.get(path, 0)
+            if old_offset > 0:
+                logger.warning(
+                    "Offset integrity: no chunks found for %s in collection %r — resetting offset from %d to 0",
+                    Path(path).name, collection_name, old_offset,
+                )
+                self._offsets[path] = 0
 
     # ── Change handlers ─────────────────────────────────────────────
 
