@@ -4,8 +4,13 @@ Provides a backend-agnostic filter representation that can be translated
 to backend-specific query syntax (e.g. LanceDB SQL WHERE clauses).
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, List, Union
+
+# Only allow alphanumeric column names and underscores to prevent SQL injection
+# via crafted field names in user-supplied filters.
+_SAFE_FIELD_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 @dataclass
@@ -14,6 +19,7 @@ class MetadataFilter:
 
     Args:
         field: Column name (e.g. "source", "indexed_at", "file_type").
+            Must match ``[a-zA-Z_][a-zA-Z0-9_]*`` to prevent SQL injection.
         op: Comparison operator. One of:
             "eq", "neq", "gt", "gte", "lt", "lte", "in", "like", "between".
         value: Comparison value. Scalar for most ops, list for "in" and "between".
@@ -24,6 +30,11 @@ class MetadataFilter:
     value: Any
 
     def __post_init__(self):
+        if not _SAFE_FIELD_RE.match(self.field):
+            raise ValueError(
+                f"Invalid filter field name '{self.field}': "
+                f"must match [a-zA-Z_][a-zA-Z0-9_]* (no dots, spaces, or special chars)"
+            )
         valid_ops = {"eq", "neq", "gt", "gte", "lt", "lte", "in", "like", "between"}
         if self.op not in valid_ops:
             raise ValueError(f"Invalid filter op '{self.op}', must be one of {valid_ops}")

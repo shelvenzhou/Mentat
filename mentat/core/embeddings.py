@@ -132,7 +132,7 @@ class LiteLLMEmbedding(BaseEmbedding):
         """Send one embedding batch with exponential backoff retry."""
         batch_tokens = sum(_estimate_tokens(t) for t in batch_texts)
         text_lengths = [len(t) for t in batch_texts]
-        logger.info(
+        logger.debug(
             f"Batch {batch_idx + 1}/{total_batches}: "
             f"{len(batch_texts)} texts, est. {batch_tokens} tokens, "
             f"total_chars={sum(text_lengths)}, "

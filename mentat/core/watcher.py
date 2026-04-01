@@ -96,10 +96,14 @@ class MentatWatcher:
         if not self._offsets:
             return
         p = self._offsets_path()
+        tmp = p.with_suffix(".tmp")
         try:
-            p.write_text(json_module.dumps(self._offsets))
+            tmp.write_text(json_module.dumps(self._offsets))
+            import os
+            os.replace(str(tmp), str(p))  # atomic on POSIX
         except Exception:
             logger.exception("Failed to save watcher offsets")
+            tmp.unlink(missing_ok=True)
 
     # ── Lifecycle ───────────────────────────────────────────────────
 

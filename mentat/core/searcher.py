@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from mentat.core.models import MentatResult, MentatDocResult, ChunkResult
 from mentat.probes.base import TocEntry
+from mentat.storage.filters import MetadataFilterSet
 
 if TYPE_CHECKING:
     from mentat.core.hub import Mentat
@@ -28,7 +29,7 @@ class Searcher:
         doc_ids: Optional[List[str]],
         source: Optional[str],
         collections: Optional[List[str]] = None,
-        filters: Optional[Any] = None,
+        filters: Optional[MetadataFilterSet] = None,
     ) -> tuple:
         """Shared search pipeline: query transform, source/collection filter, embed, search.
 
@@ -139,7 +140,7 @@ class Searcher:
         source: Optional[str] = None,
         with_metadata: Optional[bool] = None,
         collections: Optional[List[str]] = None,
-        filters: Optional[Any] = None,
+        filters: Optional[MetadataFilterSet] = None,
     ) -> List[MentatResult]:
         """Search for relevant chunks and return results with instructions.
 
@@ -235,7 +236,7 @@ class Searcher:
         source: Optional[str] = None,
         with_metadata: Optional[bool] = None,
         collections: Optional[List[str]] = None,
-        filters: Optional[Any] = None,
+        filters: Optional[MetadataFilterSet] = None,
     ) -> List[MentatDocResult]:
         """Search and return results grouped by document.
 

@@ -78,6 +78,34 @@ def prepare_embed_texts(
     return embed_texts, chunk_mapping
 
 
+def _promote_metadata_fields(
+    record: Dict[str, Any],
+    extra_fields: Dict[str, Any],
+    field_names: List[str],
+) -> None:
+    """Promote fields from metadata_json into the top-level record dict.
+
+    Only promotes if the record's current value for the field is None
+    (i.e. not already set by extra_fields directly).
+    """
+    promoted_any = False
+    for name in field_names:
+        if record.get(name) is not None:
+            continue
+        if not promoted_any:
+            meta_json = extra_fields.get("metadata_json", "")
+            if not meta_json or meta_json == "{}":
+                return
+            try:
+                import json as _json
+                meta = _json.loads(meta_json)
+            except (ValueError, TypeError):
+                return
+            promoted_any = True
+        if name in meta:
+            record[name] = meta[name]
+
+
 def build_chunk_records(
     doc_id: str,
     filename: str,
@@ -131,17 +159,9 @@ def build_chunk_records(
         }
         if extra_fields:
             record.update(extra_fields)
-            # Promote session_id from metadata_json to top-level for filtering
-            if record.get("session_id") is None:
-                meta_json = extra_fields.get("metadata_json", "")
-                if meta_json and meta_json != "{}":
-                    try:
-                        import json as _json
-                        meta = _json.loads(meta_json)
-                        if "session_id" in meta:
-                            record["session_id"] = meta["session_id"]
-                    except (ValueError, TypeError):
-                        pass
+            # Promote configured fields from metadata_json to top-level columns
+            # for efficient LanceDB filtering.  Currently promotes: session_id.
+            _promote_metadata_fields(record, extra_fields, ["session_id"])
         records.append(record)
 
     return records

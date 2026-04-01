@@ -71,6 +71,18 @@ class CollectionStore:
 
     # ── Collection CRUD ─────────────────────────────────────────────
 
+    @staticmethod
+    def _extract_watch_config(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Extract watch-related keys from metadata into a dedicated watch_config dict.
+
+        This keeps watch settings (watch_mode, watch_probe_config,
+        initial_scan_recent_days) separate from user metadata.
+        """
+        if not metadata:
+            return {}
+        watch_keys = ("watch_mode", "watch_probe_config", "initial_scan_recent_days")
+        return {k: metadata.pop(k) for k in watch_keys if k in metadata}
+
     def create(
         self,
         name: str,
@@ -81,12 +93,22 @@ class CollectionStore:
     ) -> Dict[str, Any]:
         """Create a collection (or update config if it already exists).
 
+        Watch-related keys (``watch_mode``, ``watch_probe_config``,
+        ``initial_scan_recent_days``) are extracted from *metadata* into
+        a dedicated ``watch_config`` field automatically.
+
         Returns the collection record.
         """
+        # Extract watch config from metadata before storing
+        meta_copy = dict(metadata) if metadata else {}
+        watch_config = self._extract_watch_config(meta_copy)
+
         if name in self._data:
             rec = self._data[name]
             if metadata is not None:
-                rec["metadata"] = metadata
+                rec["metadata"] = meta_copy
+            if watch_config:
+                rec.setdefault("watch_config", {}).update(watch_config)
             if watch_paths is not None:
                 rec["watch_paths"] = watch_paths
             if watch_ignore is not None:
@@ -94,14 +116,17 @@ class CollectionStore:
             if auto_add_sources is not None:
                 rec["auto_add_sources"] = auto_add_sources
         else:
-            self._data[name] = {
+            rec = {
                 "doc_ids": [],
-                "metadata": metadata or {},
+                "metadata": meta_copy,
                 "watch_paths": watch_paths or [],
                 "watch_ignore": watch_ignore or [],
                 "auto_add_sources": auto_add_sources or [],
                 "created_at": _now_iso(),
             }
+            if watch_config:
+                rec["watch_config"] = watch_config
+            self._data[name] = rec
         self._save()
         return self._data[name]
 
@@ -191,8 +216,10 @@ class CollectionStore:
     def get_all_watch_configs(self) -> Dict[str, Dict[str, Any]]:
         """Return watch configs for all collections that have watch_paths.
 
-        Includes ``watch_mode`` and ``watch_probe_config`` from collection
-        metadata when present.
+        Reads ``watch_mode``, ``watch_probe_config``, and
+        ``initial_scan_recent_days`` from the dedicated ``watch_config``
+        field.  Falls back to ``metadata`` for backward compatibility
+        with collections created before the split.
         """
         configs: Dict[str, Dict[str, Any]] = {}
         for name, rec in self._data.items():
@@ -202,13 +229,13 @@ class CollectionStore:
                 "watch_paths": rec["watch_paths"],
                 "watch_ignore": rec["watch_ignore"],
             }
+            # Prefer dedicated watch_config; fall back to metadata for compat
+            wc = rec.get("watch_config", {})
             meta = rec.get("metadata", {})
-            if meta.get("watch_mode"):
-                cfg["watch_mode"] = meta["watch_mode"]
-            if meta.get("watch_probe_config"):
-                cfg["watch_probe_config"] = meta["watch_probe_config"]
-            if meta.get("initial_scan_recent_days"):
-                cfg["initial_scan_recent_days"] = meta["initial_scan_recent_days"]
+            for key in ("watch_mode", "watch_probe_config", "initial_scan_recent_days"):
+                val = wc.get(key) or meta.get(key)
+                if val is not None:
+                    cfg[key] = val
             configs[name] = cfg
         return configs
 
