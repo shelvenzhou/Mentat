@@ -79,8 +79,12 @@ class BaseProbe(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def run(self, file_path: str) -> ProbeResult:
-        """Extract statistical and structural data from the file."""
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
+        """Extract statistical and structural data from the file.
+
+        Subclasses may accept additional keyword arguments (e.g.
+        ``probe_config``) for format-specific configuration.
+        """
         pass
 
     def generate_instructions(self, probe_result: ProbeResult) -> Tuple[str, str]:

@@ -8,6 +8,7 @@ from mentat.probes.pdf_probe import PDFProbe
 from mentat.probes.archive_probe import ArchiveProbe
 from mentat.probes.csv_probe import CSVProbe
 from mentat.probes.json_probe import JSONProbe
+from mentat.probes.jsonl_probe import JSONLProbe
 from mentat.probes.config_probe import ConfigProbe
 from mentat.probes.code_probe import CodeProbe
 from mentat.probes.log_probe import LogProbe
@@ -50,6 +51,7 @@ _REGISTERED_PROBES.extend([
     ArchiveProbe(),   # .zip/.tar.*
     CSVProbe(),       # .csv
     JSONProbe(),      # .json
+    JSONLProbe(),     # .jsonl/.ndjson
     ConfigProbe(),    # .yaml/.toml/.ini/.conf
     CodeProbe(),      # .py/.js/.ts
     LogProbe(),       # .log
@@ -69,9 +71,13 @@ def get_probe(file_path: str) -> Optional[BaseProbe]:
     return None
 
 
-def run_probe(file_path: str) -> ProbeResult:
-    """Convenience: find the right probe and run it."""
+def run_probe(file_path: str, **kwargs) -> ProbeResult:
+    """Convenience: find the right probe and run it.
+
+    Extra *kwargs* (e.g. ``probe_config``) are forwarded to the probe's
+    ``run()`` method.
+    """
     probe = get_probe(file_path)
     if not probe:
         raise ValueError(f"No probe found for file: {file_path}")
-    return probe.run(file_path)
+    return probe.run(file_path, **kwargs)

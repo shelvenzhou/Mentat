@@ -34,7 +34,7 @@ class DOCXProbe(BaseProbe):
             return False
         return filename.lower().endswith(".docx")
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         doc = Document(file_path)
 
         # --- Extract all text for token estimation ---

@@ -28,6 +28,7 @@ class Searcher:
         doc_ids: Optional[List[str]],
         source: Optional[str],
         collections: Optional[List[str]] = None,
+        filters: Optional[Any] = None,
     ) -> tuple:
         """Shared search pipeline: query transform, source/collection filter, embed, search.
 
@@ -70,7 +71,8 @@ class Searcher:
 
         query_vector = await m.embeddings.embed(query)
         raw_results = m.storage.search(
-            query_vector, query, limit=top_k, use_hybrid=hybrid, doc_ids=doc_ids
+            query_vector, query, limit=top_k, use_hybrid=hybrid, doc_ids=doc_ids,
+            filters=filters,
         )
 
         if not raw_results:
@@ -137,6 +139,7 @@ class Searcher:
         source: Optional[str] = None,
         with_metadata: Optional[bool] = None,
         collections: Optional[List[str]] = None,
+        filters: Optional[Any] = None,
     ) -> List[MentatResult]:
         """Search for relevant chunks and return results with instructions.
 
@@ -164,7 +167,7 @@ class Searcher:
             with_metadata = toc_only
 
         raw_results, stub_cache, query = await self._raw_search(
-            query, top_k, hybrid, doc_ids, source, collections
+            query, top_k, hybrid, doc_ids, source, collections, filters=filters
         )
         if not raw_results:
             return []
@@ -232,6 +235,7 @@ class Searcher:
         source: Optional[str] = None,
         with_metadata: Optional[bool] = None,
         collections: Optional[List[str]] = None,
+        filters: Optional[Any] = None,
     ) -> List[MentatDocResult]:
         """Search and return results grouped by document.
 
@@ -248,7 +252,7 @@ class Searcher:
             with_metadata = toc_only
 
         raw_results, stub_cache, query = await self._raw_search(
-            query, top_k, hybrid, doc_ids, source, collections
+            query, top_k, hybrid, doc_ids, source, collections, filters=filters
         )
         if not raw_results:
             return []

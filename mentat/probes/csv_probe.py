@@ -25,7 +25,7 @@ class CSVProbe(BaseProbe):
     def can_handle(self, filename: str, content_type: str) -> bool:
         return filename.lower().endswith(".csv") or content_type == "text/csv"
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         df = pd.read_csv(file_path)
         columns = df.columns.tolist()
 

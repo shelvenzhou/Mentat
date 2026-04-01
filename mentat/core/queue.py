@@ -127,9 +127,21 @@ def build_chunk_records(
             "is_split": total_pieces > 1,
             "piece_index": piece_idx if total_pieces > 1 else None,
             "total_pieces": total_pieces if total_pieces > 1 else None,
+            "session_id": None,  # Always present; promoted from metadata below
         }
         if extra_fields:
             record.update(extra_fields)
+            # Promote session_id from metadata_json to top-level for filtering
+            if record.get("session_id") is None:
+                meta_json = extra_fields.get("metadata_json", "")
+                if meta_json and meta_json != "{}":
+                    try:
+                        import json as _json
+                        meta = _json.loads(meta_json)
+                        if "session_id" in meta:
+                            record["session_id"] = meta["session_id"]
+                    except (ValueError, TypeError):
+                        pass
         records.append(record)
 
     return records

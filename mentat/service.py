@@ -9,6 +9,24 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from mentat.core.hub import Mentat
+from mentat.storage.filters import MetadataFilter, MetadataFilterSet
+
+
+def _build_filters(metadata_filter: Optional[Dict[str, Any]]) -> Optional[MetadataFilterSet]:
+    """Convert a dict to a MetadataFilterSet for LanceDB.
+
+    Simple form (equality):  ``{"session_id": "abc"}``
+    Extended form (any op):  ``{"session_id": {"op": "neq", "value": "abc"}}``
+    """
+    if not metadata_filter:
+        return None
+    filters: list[MetadataFilter] = []
+    for k, v in metadata_filter.items():
+        if isinstance(v, dict) and "op" in v:
+            filters.append(MetadataFilter(field=k, op=v["op"], value=v["value"]))
+        else:
+            filters.append(MetadataFilter(field=k, op="eq", value=v))
+    return MetadataFilterSet(filters=filters)
 
 
 def get_mentat() -> Mentat:
@@ -106,10 +124,17 @@ async def search_docs(
     with_metadata: Optional[bool] = None,
     collection: Optional[str] = None,
     collections: Optional[List[str]] = None,
+    metadata_filter: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Search for documents. Returns list of result dicts."""
+    """Search for documents. Returns list of result dicts.
+
+    Args:
+        metadata_filter: Simple key-value equality filters on chunk metadata
+            columns, e.g. ``{"session_id": "abc"}``.
+    """
     m = get_mentat()
     colls = resolve_collections(collection, collections)
+    filters = _build_filters(metadata_filter)
     results = await m.search(
         query,
         top_k=top_k,
@@ -118,6 +143,7 @@ async def search_docs(
         source=source,
         with_metadata=with_metadata,
         collections=colls,
+        filters=filters,
     )
     return [r.model_dump() for r in results]
 
@@ -131,10 +157,12 @@ async def search_grouped(
     with_metadata: Optional[bool] = None,
     collection: Optional[str] = None,
     collections: Optional[List[str]] = None,
+    metadata_filter: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Search for documents, grouped by doc. Returns list of result dicts."""
     m = get_mentat()
     colls = resolve_collections(collection, collections)
+    filters = _build_filters(metadata_filter)
     results = await m.search_grouped(
         query,
         top_k=top_k,
@@ -143,6 +171,7 @@ async def search_grouped(
         source=source,
         with_metadata=with_metadata,
         collections=colls,
+        filters=filters,
     )
     return [r.model_dump() for r in results]
 

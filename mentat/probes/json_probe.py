@@ -89,7 +89,7 @@ class JSONProbe(BaseProbe):
             return self._count_keys(data[0])
         return 0
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         with open(file_path, "r", encoding="utf-8") as f:
             raw = f.read()
 

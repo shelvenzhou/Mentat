@@ -189,12 +189,28 @@ class CollectionStore:
         }
 
     def get_all_watch_configs(self) -> Dict[str, Dict[str, Any]]:
-        """Return watch configs for all collections that have watch_paths."""
-        return {
-            name: {"watch_paths": rec["watch_paths"], "watch_ignore": rec["watch_ignore"]}
-            for name, rec in self._data.items()
-            if rec.get("watch_paths")
-        }
+        """Return watch configs for all collections that have watch_paths.
+
+        Includes ``watch_mode`` and ``watch_probe_config`` from collection
+        metadata when present.
+        """
+        configs: Dict[str, Dict[str, Any]] = {}
+        for name, rec in self._data.items():
+            if not rec.get("watch_paths"):
+                continue
+            cfg: Dict[str, Any] = {
+                "watch_paths": rec["watch_paths"],
+                "watch_ignore": rec["watch_ignore"],
+            }
+            meta = rec.get("metadata", {})
+            if meta.get("watch_mode"):
+                cfg["watch_mode"] = meta["watch_mode"]
+            if meta.get("watch_probe_config"):
+                cfg["watch_probe_config"] = meta["watch_probe_config"]
+            if meta.get("initial_scan_recent_days"):
+                cfg["initial_scan_recent_days"] = meta["initial_scan_recent_days"]
+            configs[name] = cfg
+        return configs
 
     # ── Auto-routing ────────────────────────────────────────────────
 

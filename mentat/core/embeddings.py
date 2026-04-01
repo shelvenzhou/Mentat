@@ -1,7 +1,12 @@
 import abc
+import asyncio
+import logging
+import random
 from typing import List, Optional
 
 import litellm
+
+logger = logging.getLogger(__name__)
 
 # Token estimation for batching
 def _estimate_tokens(text: str) -> int:
@@ -56,21 +61,26 @@ class LiteLLMEmbedding(BaseEmbedding):
     # to keep individual request payloads manageable and allow concurrency.
     MAX_TEXTS_PER_BATCH = 100
 
+    # Retry settings
+    MAX_RETRIES = 4
+    RETRY_BASE_DELAY = 1.0  # seconds
+    RETRY_MAX_DELAY = 30.0  # seconds
+
+    # Max concurrent batch requests to avoid overwhelming the API
+    MAX_CONCURRENT_BATCHES = 4
+
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """Embed texts in batches that respect the model's limits.
 
         Batching strategy:
           * Each individual text is truncated to MAX_TOKENS_PER_TEXT if needed.
           * Texts are grouped into batches of up to MAX_TEXTS_PER_BATCH.
-          * All batches are sent concurrently.
+          * Batches are sent with bounded concurrency (MAX_CONCURRENT_BATCHES).
+          * Each batch request retries with exponential backoff on transient errors.
 
         Returns:
             List of embeddings in same order as input texts
         """
-        import asyncio
-        import logging
-        logger = logging.getLogger(__name__)
-
         if not texts:
             return []
 
@@ -94,21 +104,13 @@ class LiteLLMEmbedding(BaseEmbedding):
             for i in range(0, len(processed), self.MAX_TEXTS_PER_BATCH)
         ]
 
+        sem = asyncio.Semaphore(self.MAX_CONCURRENT_BATCHES)
+
         async def _embed_one_batch(batch_texts: List[str], batch_idx: int) -> List[List[float]]:
-            batch_tokens = sum(_estimate_tokens(t) for t in batch_texts)
-            logger.debug(
-                f"Embedding batch {batch_idx + 1}/{len(batches)}: "
-                f"{len(batch_texts)} texts, est. {batch_tokens} tokens"
-            )
-            kwargs = {"model": self.model, "input": batch_texts}
-            if self.api_key:
-                kwargs["api_key"] = self.api_key
-            if self.api_base:
-                kwargs["api_base"] = self.api_base
-            response = await litellm.aembedding(**kwargs)
-            # Sort by index to preserve order within batch
-            sorted_data = sorted(response.data, key=lambda x: x["index"])
-            return [item["embedding"] for item in sorted_data]
+            async with sem:
+                return await self._embed_one_batch_with_retry(
+                    batch_texts, batch_idx, len(batches)
+                )
 
         batch_results = await asyncio.gather(
             *(_embed_one_batch(batch, i) for i, batch in enumerate(batches))
@@ -120,6 +122,72 @@ class LiteLLMEmbedding(BaseEmbedding):
             all_embeddings.extend(batch_embeddings)
 
         return all_embeddings
+
+    async def _embed_one_batch_with_retry(
+        self,
+        batch_texts: List[str],
+        batch_idx: int,
+        total_batches: int,
+    ) -> List[List[float]]:
+        """Send one embedding batch with exponential backoff retry."""
+        batch_tokens = sum(_estimate_tokens(t) for t in batch_texts)
+        text_lengths = [len(t) for t in batch_texts]
+        logger.info(
+            f"Batch {batch_idx + 1}/{total_batches}: "
+            f"{len(batch_texts)} texts, est. {batch_tokens} tokens, "
+            f"total_chars={sum(text_lengths)}, "
+            f"max_chars={max(text_lengths)}, min_chars={min(text_lengths)}, "
+            f"model={self.model}, api_base={self.api_base}"
+        )
+
+        kwargs = {"model": self.model, "input": batch_texts}
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
+
+        last_exc: Optional[Exception] = None
+        for attempt in range(self.MAX_RETRIES + 1):
+            try:
+                if attempt > 0:
+                    delay = min(
+                        self.RETRY_BASE_DELAY * (2 ** (attempt - 1)),
+                        self.RETRY_MAX_DELAY,
+                    )
+                    # Add jitter to avoid thundering herd
+                    delay *= 0.5 + random.random()
+                    logger.warning(
+                        f"Batch {batch_idx + 1}/{total_batches} retry {attempt}/{self.MAX_RETRIES} "
+                        f"after {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
+
+                response = await litellm.aembedding(**kwargs)
+                sorted_data = sorted(response.data, key=lambda x: x["index"])
+                return [item["embedding"] for item in sorted_data]
+
+            except (
+                litellm.exceptions.InternalServerError,
+                litellm.exceptions.RateLimitError,
+                litellm.exceptions.ServiceUnavailableError,
+                litellm.exceptions.Timeout,
+                litellm.exceptions.APIConnectionError,
+            ) as e:
+                last_exc = e
+                logger.warning(
+                    f"Batch {batch_idx + 1}/{total_batches} attempt {attempt + 1}/{self.MAX_RETRIES + 1} "
+                    f"failed: {type(e).__name__}: {e} "
+                    f"[{len(batch_texts)} texts, est. {batch_tokens} tokens, "
+                    f"max_chars={max(text_lengths)}]"
+                )
+                if attempt == self.MAX_RETRIES:
+                    logger.error(
+                        f"Batch {batch_idx + 1}/{total_batches} gave up after "
+                        f"{self.MAX_RETRIES + 1} attempts: {type(e).__name__}: {e}"
+                    )
+                    raise
+
+        raise last_exc  # unreachable, but satisfies type checker
 
 
 class EmbeddingRegistry:

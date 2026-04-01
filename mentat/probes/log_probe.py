@@ -49,7 +49,7 @@ class LogProbe(BaseProbe):
     def can_handle(self, filename: str, content_type: str) -> bool:
         return filename.lower().endswith(".log")
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         content = safe_read_text(file_path)
         lines = content.split("\n")
         non_empty = [l for l in lines if l.strip()]

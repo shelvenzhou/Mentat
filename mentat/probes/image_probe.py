@@ -33,7 +33,7 @@ class ImageProbe(BaseProbe):
             (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp")
         )
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         file_size = os.path.getsize(file_path)
 
         with Image.open(file_path) as img:

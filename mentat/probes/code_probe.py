@@ -79,7 +79,7 @@ class CodeProbe(BaseProbe):
         ext = Path(filename).suffix.lower()
         return any(ext in info["extensions"] for info in _LANGUAGES.values())
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         with open(file_path, "rb") as f:
             raw_bytes = f.read()
 

@@ -221,7 +221,7 @@ class PDFProbe(BaseProbe):
                 )
         return chunks
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         doc = fitz.open(file_path)
 
         # Basic metadata

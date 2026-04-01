@@ -29,7 +29,7 @@ class CalendarProbe(BaseProbe):
             return False
         return filename.lower().endswith(".ics") or content_type == "text/calendar"
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         with open(file_path, "rb") as f:
             cal = Calendar.from_ical(f.read())
 

@@ -90,6 +90,8 @@ class LanceDBStorage(BaseVectorStorage):
                 pa.field("indexed_at", pa.float64(), nullable=True),
                 pa.field("file_type", pa.string(), nullable=True),
                 pa.field("metadata_json", pa.string(), nullable=True),
+                # Promoted from metadata for efficient filtering
+                pa.field("session_id", pa.string(), nullable=True),
             ]
         )
         self._chunks_table = self.db.create_table("chunks", schema=schema)

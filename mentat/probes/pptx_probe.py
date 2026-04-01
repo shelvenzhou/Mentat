@@ -31,7 +31,7 @@ class PPTXProbe(BaseProbe):
             return False
         return filename.lower().endswith(".pptx")
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         prs = Presentation(file_path)
 
         toc_entries: List[TocEntry] = []

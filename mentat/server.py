@@ -129,6 +129,7 @@ class SearchRequest(BaseModel):
     toc_only: bool = False
     source: Optional[str] = None
     with_metadata: Optional[bool] = None
+    metadata_filter: Optional[Dict[str, Any]] = None
 
 
 class TrackRequest(BaseModel):
@@ -248,6 +249,7 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             with_metadata=req.with_metadata,
             collection=req.collection,
             collections=req.collections,
+            metadata_filter=req.metadata_filter,
         )
         return {"results": results}
 
@@ -262,6 +264,7 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
             with_metadata=req.with_metadata,
             collection=req.collection,
             collections=req.collections,
+            metadata_filter=req.metadata_filter,
         )
         return {"results": results}
 

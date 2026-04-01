@@ -53,10 +53,24 @@ class FakeStorage:
     def add_chunks(self, chunks):
         self._chunks.extend(chunks)
 
-    def search(self, query_vector, query_text="", limit=5, use_hybrid=False, doc_ids=None):
+    def search(self, query_vector, query_text="", limit=5, use_hybrid=False, doc_ids=None, filters=None):
         rows = self._chunks
         if doc_ids is not None:
             rows = [r for r in rows if r.get("doc_id") in set(doc_ids)]
+        if filters is not None and not filters.is_empty():
+            # Simple in-memory filter matching for tests
+            import json as _json
+            def _match(row):
+                for f in filters.filters:
+                    val = row.get(f.field)
+                    if val is None:
+                        return False
+                    if f.op == "eq" and val != f.value:
+                        return False
+                    elif f.op == "in" and val not in f.value:
+                        return False
+                return True
+            rows = [r for r in rows if _match(r)]
 
         def _dist(row):
             vec = row.get("vector", [])

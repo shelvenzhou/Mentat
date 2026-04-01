@@ -43,6 +43,7 @@ class Indexer:
         _logical_filename: Optional[str] = None,
         collection: Optional[str] = None,
         _skip_path_dedup: bool = False,
+        probe_config: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Index a file with async background processing.
 
@@ -111,7 +112,8 @@ class Indexer:
 
         # Layer 2: Probe — extract skeleton (no LLM, fast ~1s)
         with Telemetry.time_it(doc_id, "probe"):
-            probe_result = run_probe(path)
+            probe_kwargs = {"probe_config": probe_config} if probe_config else {}
+            probe_result = run_probe(path, **probe_kwargs)
             probe_result.doc_id = doc_id
             probe_result.filename = filename
 

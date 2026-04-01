@@ -81,7 +81,7 @@ class MarkdownProbe(BaseProbe):
             or content_type == "text/markdown"
         )
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
 

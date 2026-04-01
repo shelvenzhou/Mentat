@@ -32,7 +32,7 @@ class ConfigProbe(BaseProbe):
             (".yaml", ".yml", ".toml", ".ini", ".conf", ".cfg")
         )
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         content = safe_read_text(file_path)
         ext = Path(file_path).suffix.lower()
         approx_tokens = estimate_tokens(content)

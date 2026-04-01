@@ -53,7 +53,7 @@ class FakeStorage:
     def add_chunks(self, chunks):
         self._chunks.extend(chunks)
 
-    def search(self, query_vector, query_text="", limit=5, use_hybrid=False, doc_ids=None):
+    def search(self, query_vector, query_text="", limit=5, use_hybrid=False, doc_ids=None, filters=None):
         rows = self._chunks
         if doc_ids is not None:
             rows = [r for r in rows if r.get("doc_id") in set(doc_ids)]

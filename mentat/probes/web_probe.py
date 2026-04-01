@@ -59,7 +59,7 @@ class WebProbe(BaseProbe):
             filename.lower().endswith((".html", ".htm")) or content_type == "text/html"
         )
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         with open(file_path, "r", encoding="utf-8") as f:
             html_content = f.read()
 

@@ -30,7 +30,7 @@ class ArchiveProbe(BaseProbe):
             (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz")
         )
 
-    def run(self, file_path: str) -> ProbeResult:
+    def run(self, file_path: str, **kwargs) -> ProbeResult:
         lower = file_path.lower()
 
         if lower.endswith(".zip"):
