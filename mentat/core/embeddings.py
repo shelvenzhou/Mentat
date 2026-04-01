@@ -4,7 +4,7 @@ import logging
 import random
 from typing import List, Optional
 
-import litellm
+import openai
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class BaseEmbedding(abc.ABC):
         return await asyncio.gather(*(self.embed(t) for t in texts))
 
 
-class LiteLLMEmbedding(BaseEmbedding):
+class OpenAIEmbedding(BaseEmbedding):
     def __init__(
         self,
         model: str = "text-embedding-3-small",
@@ -41,17 +41,16 @@ class LiteLLMEmbedding(BaseEmbedding):
         api_base: Optional[str] = None,
     ):
         self.model = model
-        self.api_key = api_key
-        self.api_base = api_base
+        self._client = openai.AsyncOpenAI(
+            api_key=api_key or None,
+            base_url=api_base or None,
+        )
 
     async def embed(self, text: str) -> List[float]:
-        kwargs = {"model": self.model, "input": [text]}
-        if self.api_key:
-            kwargs["api_key"] = self.api_key
-        if self.api_base:
-            kwargs["api_base"] = self.api_base
-        response = await litellm.aembedding(**kwargs)
-        return response.data[0]["embedding"]
+        response = await self._client.embeddings.create(
+            model=self.model, input=[text]
+        )
+        return response.data[0].embedding
 
     # Per-text token limit (OpenAI text-embedding-3-*: 8191 tokens max per input)
     # Conservative to account for estimation error in _estimate_tokens()
@@ -68,6 +67,9 @@ class LiteLLMEmbedding(BaseEmbedding):
 
     # Max concurrent batch requests to avoid overwhelming the API
     MAX_CONCURRENT_BATCHES = 4
+
+    # Minimum seconds between consecutive batch requests
+    BATCH_INTERVAL = 0.2
 
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """Embed texts in batches that respect the model's limits.
@@ -105,9 +107,21 @@ class LiteLLMEmbedding(BaseEmbedding):
         ]
 
         sem = asyncio.Semaphore(self.MAX_CONCURRENT_BATCHES)
+        # Lock to enforce minimum interval between request starts
+        interval_lock = asyncio.Lock()
+        last_request_time = 0.0
 
         async def _embed_one_batch(batch_texts: List[str], batch_idx: int) -> List[List[float]]:
+            nonlocal last_request_time
             async with sem:
+                # Enforce minimum interval between requests
+                async with interval_lock:
+                    import time
+                    now = time.monotonic()
+                    wait = self.BATCH_INTERVAL - (now - last_request_time)
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+                    last_request_time = time.monotonic()
                 return await self._embed_one_batch_with_retry(
                     batch_texts, batch_idx, len(batches)
                 )
@@ -137,14 +151,8 @@ class LiteLLMEmbedding(BaseEmbedding):
             f"{len(batch_texts)} texts, est. {batch_tokens} tokens, "
             f"total_chars={sum(text_lengths)}, "
             f"max_chars={max(text_lengths)}, min_chars={min(text_lengths)}, "
-            f"model={self.model}, api_base={self.api_base}"
+            f"model={self.model}, base_url={self._client.base_url}"
         )
-
-        kwargs = {"model": self.model, "input": batch_texts}
-        if self.api_key:
-            kwargs["api_key"] = self.api_key
-        if self.api_base:
-            kwargs["api_base"] = self.api_base
 
         last_exc: Optional[Exception] = None
         for attempt in range(self.MAX_RETRIES + 1):
@@ -162,16 +170,17 @@ class LiteLLMEmbedding(BaseEmbedding):
                     )
                     await asyncio.sleep(delay)
 
-                response = await litellm.aembedding(**kwargs)
-                sorted_data = sorted(response.data, key=lambda x: x["index"])
-                return [item["embedding"] for item in sorted_data]
+                response = await self._client.embeddings.create(
+                    model=self.model, input=batch_texts
+                )
+                sorted_data = sorted(response.data, key=lambda x: x.index)
+                return [item.embedding for item in sorted_data]
 
             except (
-                litellm.exceptions.InternalServerError,
-                litellm.exceptions.RateLimitError,
-                litellm.exceptions.ServiceUnavailableError,
-                litellm.exceptions.Timeout,
-                litellm.exceptions.APIConnectionError,
+                openai.InternalServerError,
+                openai.RateLimitError,
+                openai.APITimeoutError,
+                openai.APIConnectionError,
             ) as e:
                 last_exc = e
                 logger.warning(
@@ -191,7 +200,7 @@ class LiteLLMEmbedding(BaseEmbedding):
 
 
 class EmbeddingRegistry:
-    _providers = {"litellm": LiteLLMEmbedding}
+    _providers = {"openai": OpenAIEmbedding}
 
     @classmethod
     def get_provider(cls, name: str, **kwargs) -> BaseEmbedding:

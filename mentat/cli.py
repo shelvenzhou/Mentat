@@ -5,8 +5,7 @@ import warnings
 
 import click
 
-# litellm creates fire-and-forget async logging coroutines that get
-# cancelled when asyncio.run() tears down the event loop.  Harmless.
+# Suppress harmless async cleanup warnings on interpreter shutdown.
 warnings.filterwarnings("ignore", message="coroutine.*was never awaited")
 
 from mentat.core.hub import Mentat

@@ -3,7 +3,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-import litellm
+import openai
 
 from mentat.probes.base import Chunk, ProbeResult
 
@@ -51,18 +51,11 @@ class Librarian:
     ):
         # Chunk summarisation (fast/cheap model)
         self.summary_model = summary_model
-        self.summary_api_key = summary_api_key
-        self.summary_api_base = summary_api_base
         self.summary_batch_size = summary_batch_size
-
-    def _llm_kwargs(self) -> Dict[str, Any]:
-        """Return kwargs for ``litellm.acompletion`` calls (summary model only)."""
-        kw: Dict[str, Any] = {}
-        if self.summary_api_key:
-            kw["api_key"] = self.summary_api_key
-        if self.summary_api_base:
-            kw["api_base"] = self.summary_api_base
-        return kw
+        self._client = openai.AsyncOpenAI(
+            api_key=summary_api_key or None,
+            base_url=summary_api_base or None,
+        )
 
     # ------------------------------------------------------------------
     # Phase 1: Per-chunk summarisation
@@ -186,14 +179,13 @@ class Librarian:
             f'[{{"index": <int>, "summary": "<string>"}}, ...]'
         )
 
-        response = await litellm.acompletion(
+        response = await self._client.chat.completions.create(
             model=self.summary_model,
             messages=[
                 {"role": "system", "content": _CHUNK_SUMMARY_SYSTEM},
                 {"role": "user", "content": user_msg},
             ],
             response_format={"type": "json_object"},
-            **self._llm_kwargs(),
         )
 
         batch_duration = time_module.perf_counter() - batch_start

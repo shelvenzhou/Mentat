@@ -37,8 +37,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import fitz  # PyMuPDF
-import litellm
-import litellm.integrations.custom_logger
+import openai
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -47,7 +46,6 @@ logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
-litellm.set_verbose = False
 
 
 # ── Configuration ───────────────────────────────────────────────────────
@@ -153,49 +151,17 @@ class BenchmarkQuestion:
 # ── Token Tracking ──────────────────────────────────────────────────────
 
 
-class TokenCallback(litellm.integrations.custom_logger.CustomLogger):
-    """Intercepts all litellm calls to track token usage.
-
-    NOTE: litellm fires async callbacks AFTER the response is yielded,
-    so callers must ``await asyncio.sleep(0)`` before changing the target.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.target: Optional[TokenUsage] = None
-
-    def set_target(self, target: Optional[TokenUsage]):
-        self.target = target
-
-    async def set_target_async(self, target: Optional[TokenUsage]):
-        """Switch target, giving pending callbacks a chance to fire first."""
-        await asyncio.sleep(0.05)
-        self.target = target
-
-    def _record(self, response_obj, kwargs):
-        if self.target is None:
-            return
-        usage = getattr(response_obj, "usage", None)
-        if not usage:
-            return
-        prompt = getattr(usage, "prompt_tokens", 0) or 0
-        completion = getattr(usage, "completion_tokens", 0) or 0
-        is_embed = kwargs.get("call_type", "") in ("embedding", "aembedding")
-        if is_embed:
-            self.target.embedding_tokens += prompt
-        else:
-            self.target.llm_prompt_tokens += prompt
-            self.target.llm_completion_tokens += completion
-
-    def log_success_event(self, kwargs, response_obj, start_time, end_time):
-        self._record(response_obj, kwargs)
-
-    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
-        self._record(response_obj, kwargs)
-
-
-_cb = TokenCallback()
-litellm.callbacks = [_cb]
+def _record_usage(usage, target: TokenUsage, is_embed: bool = False):
+    """Record token usage from an OpenAI API response."""
+    if usage is None or target is None:
+        return
+    prompt = getattr(usage, "prompt_tokens", 0) or 0
+    completion = getattr(usage, "completion_tokens", 0) or 0
+    if is_embed:
+        target.embedding_tokens += prompt
+    else:
+        target.llm_prompt_tokens += prompt
+        target.llm_completion_tokens += completion
 
 
 # ── Questions ───────────────────────────────────────────────────────────
@@ -328,28 +294,28 @@ SECTION_PICKER_PROMPT = (
 )
 
 
+def _get_openai_client(config: BenchmarkConfig) -> openai.AsyncOpenAI:
+    """Create an OpenAI async client from benchmark config."""
+    return openai.AsyncOpenAI(
+        api_key=config.api_key or None,
+        base_url=config.api_base or None,
+    )
+
+
 async def llm_call(
     system: str, user: str, config: BenchmarkConfig, usage: TokenUsage
 ) -> str:
-    _cb.set_target(usage)
-    try:
-        kwargs: Dict[str, Any] = {
-            "model": config.chat_model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0,
-        }
-        if config.api_key:
-            kwargs["api_key"] = config.api_key
-        if config.api_base:
-            kwargs["api_base"] = config.api_base
-        resp = await litellm.acompletion(**kwargs)
-        await asyncio.sleep(0.05)  # let callback fire
-        return resp.choices[0].message.content or ""
-    finally:
-        _cb.set_target(None)
+    client = _get_openai_client(config)
+    resp = await client.chat.completions.create(
+        model=_openai_model_name(config.chat_model),
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=0,
+    )
+    _record_usage(resp.usage, usage, is_embed=False)
+    return resp.choices[0].message.content or ""
 
 
 # ── Cleanup helpers ─────────────────────────────────────────────────────
@@ -362,20 +328,12 @@ def _cleanup_paths(*paths: str):
             shutil.rmtree(path)
 
 
-def _resolve_mentat_embedding(model: str) -> str:
-    """Ensure the embedding model name is in mentat's expected format."""
-    # Already in openai/openai/... format
-    if model.count("/") >= 2:
-        return model
-    parts = model.split("/")
-    if len(parts) == 2 and parts[0] == "openai":
-        return f"openai/openai/{parts[1]}"
-    return model
-
-
 def _openai_model_name(model: str) -> str:
-    """Strip 'openai/' prefix for the raw OpenAI client."""
-    return model.replace("openai/", "", 1)
+    """Strip provider prefix (e.g. 'openai/') for direct OpenAI API calls."""
+    # Handle litellm-style prefixes like "openai/gpt-4o-mini"
+    if "/" in model:
+        return model.split("/", 1)[1]
+    return model
 
 
 # ── System: Naive ───────────────────────────────────────────────────────
@@ -424,19 +382,18 @@ def _chunk_text(text: str, size: int, overlap: int) -> List[str]:
     return chunks
 
 
-async def _embed_via_litellm(
+async def _embed_texts(
     texts: List[str], config: BenchmarkConfig, usage: TokenUsage,
 ) -> List[List[float]]:
-    """Embed texts using litellm (consistent with mentat)."""
-    _cb.set_target(usage)
-    kwargs: Dict[str, Any] = {"model": config.embedding_model, "input": texts}
-    if config.api_key:
-        kwargs["api_key"] = config.api_key
-    if config.api_base:
-        kwargs["api_base"] = config.api_base
-    resp = await litellm.aembedding(**kwargs)
-    await asyncio.sleep(0.05)  # let callback fire
-    return [item["embedding"] for item in resp.data]
+    """Embed texts using the OpenAI API."""
+    client = _get_openai_client(config)
+    resp = await client.embeddings.create(
+        model=_openai_model_name(config.embedding_model),
+        input=texts,
+    )
+    _record_usage(resp.usage, usage, is_embed=True)
+    sorted_data = sorted(resp.data, key=lambda x: x.index)
+    return [item.embedding for item in sorted_data]
 
 
 async def run_lancedb(
@@ -458,11 +415,11 @@ async def run_lancedb(
         full_text, config.lancedb_chunk_size, config.lancedb_chunk_overlap
     )
 
-    # Embed all chunks via litellm (batched)
+    # Embed all chunks (batched)
     vectors: List[List[float]] = []
     for i in range(0, len(chunks), 100):
         batch = chunks[i : i + 100]
-        vecs = await _embed_via_litellm(batch, config, result.indexing)
+        vecs = await _embed_texts(batch, config, result.indexing)
         vectors.extend(vecs)
 
     db = lancedb.connect(config.lancedb_db_path)
@@ -484,7 +441,7 @@ async def run_lancedb(
         qr = QuestionResult(question_id=q.id, query=q.query)
 
         t0 = time.perf_counter()
-        q_vecs = await _embed_via_litellm([q.query], config, qr.retrieval)
+        q_vecs = await _embed_texts([q.query], config, qr.retrieval)
         q_vec = q_vecs[0]
 
         rows = (
@@ -532,10 +489,10 @@ def _make_mentat(config: BenchmarkConfig):
     cfg = MentatConfig(
         db_path=config.mentat_db_path,
         storage_dir=config.mentat_storage_dir,
-        embedding_model=_resolve_mentat_embedding(config.embedding_model),
+        embedding_model=_openai_model_name(config.embedding_model),
         embedding_api_key=config.api_key,
         embedding_api_base=config.api_base,
-        summary_model=config.chat_model,
+        summary_model=_openai_model_name(config.chat_model),
         summary_api_key=config.api_key,
         summary_api_base=config.api_base,
     )
@@ -608,24 +565,20 @@ async def run_mentat_trivial_rag(
     await m.start()
 
     # Index (no summarization for trivial RAG — just embeddings)
-    _cb.set_target(result.indexing)
     t0 = time.perf_counter()
     doc_ids = await m.add_batch(
         [config.paper_path], force=True, summarize=False
     )
     result.indexing.wall_time = time.perf_counter() - t0
-    await _cb.set_target_async(None)
 
     # Query
     for q in questions:
         qr = QuestionResult(question_id=q.id, query=q.query)
 
-        _cb.set_target(qr.retrieval)
         t0 = time.perf_counter()
         results = await m.search(q.query, top_k=config.top_k)
         qr.retrieval.wall_time = time.perf_counter() - t0
-        await _cb.set_target_async(None)
-
+    
         context = "\n\n---\n\n".join(
             f"[{r.section or 'N/A'}]\n{r.content}" for r in results
         )
@@ -658,13 +611,11 @@ async def run_mentat_summary_toc(
     await m.start()
 
     # Index without summarization (only probe + embed)
-    _cb.set_target(result.indexing)
     t0 = time.perf_counter()
     doc_ids = await m.add_batch(
         [config.paper_path], force=True, summarize=False
     )
     result.indexing.wall_time = time.perf_counter() - t0
-    await _cb.set_target_async(None)
 
     info = await m.inspect(doc_ids[0])
     toc_text = _extract_toc_text(info)
@@ -704,13 +655,11 @@ async def run_mentat_summary_full(
     await m.start()
 
     # Index WITH summarization
-    _cb.set_target(result.indexing)
     t0 = time.perf_counter()
     doc_ids = await m.add_batch(
         [config.paper_path], force=True, summarize=True
     )
     result.indexing.wall_time = time.perf_counter() - t0
-    await _cb.set_target_async(None)
 
     info = await m.inspect(doc_ids[0])
     toc_text = _extract_toc_text(info)
@@ -765,13 +714,11 @@ async def run_mentat_agentic(
     await m.start()
 
     # Index with summaries (one-time cost, amortized across queries)
-    _cb.set_target(result.indexing)
     t0 = time.perf_counter()
     doc_ids = await m.add_batch(
         [config.paper_path], force=True, summarize=True
     )
     result.indexing.wall_time = time.perf_counter() - t0
-    await _cb.set_target_async(None)
 
     info = await m.inspect(doc_ids[0])
     toc_text = _extract_toc_text(info)
@@ -821,12 +768,10 @@ async def run_mentat_agentic(
                 context_parts.append(f"[{sec_name}]\n{merged}")
 
         # Also do ONE vector search with the original query to fill gaps
-        _cb.set_target(qr.retrieval)
         t0 = time.perf_counter()
         search_results = await m.search(q.query, top_k=config.top_k)
         qr.retrieval.wall_time += time.perf_counter() - t0
-        await _cb.set_target_async(None)
-
+    
         for r in search_results:
             chunk_text = f"[{r.section or 'N/A'}]\n{r.content}"
             if r.summary:

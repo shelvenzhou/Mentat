@@ -112,7 +112,7 @@ class MentatConfig:
 
         # Embedding
         self.embedding_provider = self.embedding_provider or os.getenv(
-            "MENTAT_EMBEDDING_PROVIDER", "litellm"
+            "MENTAT_EMBEDDING_PROVIDER", "openai"
         )
         self.embedding_model = self.embedding_model or os.getenv(
             "MENTAT_EMBEDDING_MODEL", "text-embedding-3-small"

@@ -3,18 +3,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from mentat.core.embeddings import EmbeddingRegistry, LiteLLMEmbedding
+from mentat.core.embeddings import EmbeddingRegistry, OpenAIEmbedding
+
+_DUMMY_KEY = "sk-test-dummy"
 
 
 def _mock_embedding_response(n: int):
     return SimpleNamespace(
-        data=[{"index": i, "embedding": [float(i)]} for i in range(n)]
+        data=[SimpleNamespace(index=i, embedding=[float(i)]) for i in range(n)]
     )
 
 
 def test_registry_get_known_provider():
-    provider = EmbeddingRegistry.get_provider("litellm", model="openai/text-embedding-3-small")
-    assert isinstance(provider, LiteLLMEmbedding)
+    provider = EmbeddingRegistry.get_provider("openai", model="text-embedding-3-small", api_key=_DUMMY_KEY)
+    assert isinstance(provider, OpenAIEmbedding)
 
 
 def test_registry_get_unknown_provider_raises():
@@ -24,19 +26,19 @@ def test_registry_get_unknown_provider_raises():
 
 @pytest.mark.asyncio
 async def test_embed_batch_empty():
-    emb = LiteLLMEmbedding(model="openai/text-embedding-3-small")
+    emb = OpenAIEmbedding(model="text-embedding-3-small", api_key=_DUMMY_KEY)
     out = await emb.embed_batch([])
     assert out == []
 
 
 @pytest.mark.asyncio
 async def test_embed_batch_truncation(monkeypatch):
-    emb = LiteLLMEmbedding(model="openai/text-embedding-3-small")
+    emb = OpenAIEmbedding(model="text-embedding-3-small", api_key=_DUMMY_KEY)
     emb.MAX_TOKENS_PER_TEXT = 2  # ~6 chars
     emb.MAX_TEXTS_PER_BATCH = 10
 
     mock = AsyncMock(return_value=_mock_embedding_response(1))
-    monkeypatch.setattr("mentat.core.embeddings.litellm.aembedding", mock)
+    monkeypatch.setattr(emb._client.embeddings, "create", mock)
 
     text = "1234567890"
     await emb.embed_batch([text])
@@ -47,17 +49,17 @@ async def test_embed_batch_truncation(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_embed_batch_preserves_order(monkeypatch):
-    emb = LiteLLMEmbedding(model="openai/text-embedding-3-small")
+    emb = OpenAIEmbedding(model="text-embedding-3-small", api_key=_DUMMY_KEY)
 
     response = SimpleNamespace(
         data=[
-            {"index": 2, "embedding": [2.0]},
-            {"index": 0, "embedding": [0.0]},
-            {"index": 1, "embedding": [1.0]},
+            SimpleNamespace(index=2, embedding=[2.0]),
+            SimpleNamespace(index=0, embedding=[0.0]),
+            SimpleNamespace(index=1, embedding=[1.0]),
         ]
     )
     monkeypatch.setattr(
-        "mentat.core.embeddings.litellm.aembedding",
+        emb._client.embeddings, "create",
         AsyncMock(return_value=response),
     )
 
