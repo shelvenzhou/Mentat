@@ -11,8 +11,14 @@ SMALL_FILE_TOKENS = 2000
 
 
 def estimate_tokens(text: str) -> int:
-    """Estimate token count from text (word-count * 1.3)."""
-    return int(len(text.split()) * 1.3)
+    """Estimate token count from text.
+
+    Uses character-based estimation (len/3) which handles CJK and other
+    non-whitespace-delimited scripts correctly.  Word-count heuristics
+    catastrophically undercount languages like Chinese/Japanese where
+    whitespace is rare, leading to over-merging of chunks.
+    """
+    return max(1, int(len(text) / 3))
 
 
 def should_bypass(text: str, threshold: int = SMALL_FILE_TOKENS) -> bool:
@@ -309,122 +315,3 @@ def _split_by_sentences(
         pieces.append(" ".join(current_parts))
 
     return pieces if pieces else [text]
-
-
-def normalize_chunk_sizes(
-    chunks: List["Chunk"],
-    target_tokens: int = CHUNK_TARGET_TOKENS,
-    overlap_tokens: int = CHUNK_OVERLAP_TOKENS,
-    min_chunk_tokens: int = CHUNK_MIN_TOKENS,
-) -> List["Chunk"]:
-    """Normalize chunk sizes: merge very small chunks, split oversized ones.
-
-    Two-pass normalization that replaces ``merge_small_chunks`` as the
-    standard post-processing step:
-
-    **Pass 1 — Merge:** Adjacent chunks below *min_chunk_tokens* are merged
-    as long as the result stays within *target_tokens*.
-
-    **Pass 2 — Split:** Chunks exceeding *target_tokens* are split into
-    fixed-size pieces at paragraph/sentence boundaries with *overlap_tokens*
-    of overlap.  Each piece inherits the parent chunk's ``section``,
-    ``page``, and ``metadata``.
-
-    Returns a new list with fresh sequential ``index`` values.
-    """
-    from mentat.probes.base import Chunk
-
-    if not chunks:
-        return []
-
-    # ── Pass 1: merge small adjacent chunks ──────────────────────────
-    merged: List[Chunk] = []
-    acc_parts: List[str] = []
-    acc_tokens: int = 0
-    acc_section: Optional[str] = None
-    acc_page: Optional[int] = None
-    acc_meta: Dict[str, Any] = {}
-
-    def _flush_merge() -> None:
-        nonlocal acc_parts, acc_tokens, acc_section, acc_page, acc_meta
-        if acc_parts:
-            merged.append(
-                Chunk(
-                    content="\n\n".join(acc_parts),
-                    index=len(merged),
-                    section=acc_section,
-                    page=acc_page,
-                    metadata=acc_meta,
-                )
-            )
-            acc_parts = []
-            acc_tokens = 0
-            acc_section = None
-            acc_page = None
-            acc_meta = {}
-
-    for chunk in chunks:
-        tok = estimate_tokens(chunk.content)
-
-        if not acc_parts:
-            # Start new group
-            acc_parts = [chunk.content]
-            acc_tokens = tok
-            acc_section = chunk.section
-            acc_page = chunk.page
-            acc_meta = dict(chunk.metadata)
-            continue
-
-        combined = acc_tokens + tok
-
-        # Merge if both current accumulator and chunk are small enough
-        if acc_tokens < min_chunk_tokens and combined <= target_tokens:
-            acc_parts.append(chunk.content)
-            acc_tokens = combined
-            continue
-
-        if tok < min_chunk_tokens and combined <= target_tokens:
-            acc_parts.append(chunk.content)
-            acc_tokens = combined
-            continue
-
-        # Can't merge — flush and start new group
-        _flush_merge()
-        acc_parts = [chunk.content]
-        acc_tokens = tok
-        acc_section = chunk.section
-        acc_page = chunk.page
-        acc_meta = dict(chunk.metadata)
-
-    _flush_merge()
-
-    # ── Pass 2: split oversized chunks ───────────────────────────────
-    result: List[Chunk] = []
-
-    for chunk in merged:
-        tok = estimate_tokens(chunk.content)
-        if tok <= target_tokens:
-            result.append(
-                Chunk(
-                    content=chunk.content,
-                    index=len(result),
-                    section=chunk.section,
-                    page=chunk.page,
-                    metadata=chunk.metadata,
-                )
-            )
-        else:
-            # Split into fixed-size pieces
-            pieces = _split_text(chunk.content, target_tokens, overlap_tokens)
-            for piece_text in pieces:
-                result.append(
-                    Chunk(
-                        content=piece_text,
-                        index=len(result),
-                        section=chunk.section,
-                        page=chunk.page,
-                        metadata=dict(chunk.metadata),
-                    )
-                )
-
-    return result

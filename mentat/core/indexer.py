@@ -117,13 +117,6 @@ class Indexer:
             probe_result.doc_id = doc_id
             probe_result.filename = filename
 
-        # Normalize chunk sizes for optimal retrieval performance
-        from mentat.probes._utils import normalize_chunk_sizes
-        probe_result.chunks = normalize_chunk_sizes(
-            probe_result.chunks,
-            target_tokens=m.config.chunk_target_tokens,
-        )
-
         Telemetry.record_chunks(doc_id, len(probe_result.chunks))
 
         # Record fast mode (template + no summarization)
@@ -314,13 +307,6 @@ class Indexer:
                 probe_result = run_probe(path)
                 probe_result.doc_id = doc_id
                 probe_result.filename = filename
-
-            # Normalize chunk sizes for optimal retrieval performance
-            from mentat.probes._utils import normalize_chunk_sizes
-            probe_result.chunks = normalize_chunk_sizes(
-                probe_result.chunks,
-                target_tokens=m.config.chunk_target_tokens,
-            )
 
             Telemetry.record_chunks(doc_id, len(probe_result.chunks))
 

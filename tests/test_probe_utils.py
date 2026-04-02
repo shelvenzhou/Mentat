@@ -12,11 +12,18 @@ from mentat.probes._utils import (
 
 def test_estimate_tokens_basic():
     text = "one two three four"
-    assert estimate_tokens(text) == 5
+    # char-based: 18 chars / 3 = 6
+    assert estimate_tokens(text) == 6
 
 
 def test_estimate_tokens_empty():
-    assert estimate_tokens("") == 0
+    assert estimate_tokens("") == 1  # max(1, 0)
+
+
+def test_estimate_tokens_cjk():
+    # Chinese text with no whitespace should still get a reasonable count
+    text = "你好世界这是一段中文文本"  # 11 chars, ~33 bytes
+    assert estimate_tokens(text) >= 3  # should not be 0 or 1
 
 
 def test_should_bypass_small_file():
