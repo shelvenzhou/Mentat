@@ -15,6 +15,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mentat.searcher")
 
 
+def _extract_score(r: Dict[str, Any]) -> float:
+    """Extract a distance-style score (lower = better) from a LanceDB result.
+
+    Vector search returns ``_distance`` (lower = closer).
+    Hybrid search returns ``_relevance_score`` (higher = more relevant).
+    We normalise to "lower is better" so the rest of the pipeline can sort
+    consistently.  When ``_relevance_score`` is present we invert it
+    (``1 - score``) so a perfect FTS hit (1.0) becomes 0.0.
+    """
+    if "_relevance_score" in r:
+        return 1.0 - r["_relevance_score"]
+    return r.get("_distance", 0.0)
+
+
 class Searcher:
     """Handles all search and query operations."""
 
@@ -198,7 +212,7 @@ class Searcher:
                         summary=r.get("summary", ""),
                         brief_intro=stub.get("brief_intro", "") if with_metadata else "",
                         instructions=instructions,
-                        score=r.get("_distance", 0.0),
+                        score=_extract_score(r),
                         source=stub.get("source", ""),
                         metadata=self._parse_stub_metadata(stub),
                     )
@@ -264,7 +278,7 @@ class Searcher:
         doc_groups: Dict[str, Dict[str, Any]] = {}
         for r in raw_results:
             did = r.get("doc_id", "")
-            score = r.get("_distance", 0.0)
+            score = _extract_score(r)
             if did not in doc_groups:
                 doc_groups[did] = {"chunks": [], "best_score": score, "sections": set()}
             doc_groups[did]["chunks"].append(r)
@@ -292,7 +306,7 @@ class Searcher:
                             section=r.get("section"),
                             content=r.get("content", ""),
                             summary=r.get("summary", ""),
-                            score=r.get("_distance", 0.0),
+                            score=_extract_score(r),
                         )
                     )
 
@@ -342,7 +356,7 @@ class Searcher:
         for r in raw_results:
             doc_id = r.get("doc_id", "")
             section = r.get("section", "")
-            score = r.get("_distance", 0.0)
+            score = _extract_score(r)
 
             if doc_id not in doc_groups:
                 doc_groups[doc_id] = {"sections": set(), "best_score": score}
