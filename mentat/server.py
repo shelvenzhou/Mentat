@@ -455,6 +455,13 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
         m.collections_store.remove_doc(name, doc_id)
         return {"removed": doc_id, "collection": name}
 
+    @app.delete("/collections/{name}/sessions/{session_id}")
+    async def collection_remove_session(name: str, session_id: str):
+        import mentat as _mentat_mod
+
+        removed = _mentat_mod.delete_by_session_id(session_id, collection=name)
+        return {"removed_doc_ids": removed, "session_id": session_id, "collection": name}
+
     @app.post("/collections/{name}/search")
     async def collection_search(name: str, req: SearchRequest):
         m = _mentat()

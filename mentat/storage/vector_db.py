@@ -1,3 +1,6 @@
+import logging
+import re
+
 import lancedb
 import pyarrow as pa
 from typing import List, Dict, Any, Optional, Set, TYPE_CHECKING
@@ -6,6 +9,53 @@ from mentat.storage.base import BaseVectorStorage
 
 if TYPE_CHECKING:
     from mentat.storage.filters import MetadataFilterSet
+
+logger = logging.getLogger("mentat.vector_db")
+
+# ---------------------------------------------------------------------------
+# Chinese-aware tokenization for FTS
+# ---------------------------------------------------------------------------
+_HAS_JIEBA = False
+try:
+    import jieba
+    jieba.setLogLevel(logging.WARNING)
+    _HAS_JIEBA = True
+except ImportError:
+    pass
+
+# Regex: runs of CJK Unified Ideographs (common + ext-A/B)
+_CJK_RE = re.compile(
+    r"[\u4e00-\u9fff\u3400-\u4dbf\U00020000-\U0002a6df]+"
+)
+
+
+def _contains_cjk(text: str) -> bool:
+    return bool(_CJK_RE.search(text))
+
+
+def tokenize_for_fts(text: str) -> str:
+    """Return *text* with CJK runs segmented by jieba (space-separated).
+
+    Non-CJK parts are left untouched so the default LanceDB tokenizer
+    (split on whitespace/punctuation) handles them normally.
+    If jieba is not installed, returns text unchanged.
+    """
+    if not _HAS_JIEBA or not _contains_cjk(text):
+        return text
+
+    parts: list[str] = []
+    last_end = 0
+    for m in _CJK_RE.finditer(text):
+        # Keep non-CJK text as-is
+        if m.start() > last_end:
+            parts.append(text[last_end:m.start()])
+        # Segment the CJK run
+        tokens = jieba.lcut(m.group())
+        parts.append(" ".join(tokens))
+        last_end = m.end()
+    if last_end < len(text):
+        parts.append(text[last_end:])
+    return "".join(parts)
 
 
 # Schema for document-level metadata (stubs)
@@ -77,6 +127,7 @@ class LanceDBStorage(BaseVectorStorage):
                 pa.field("doc_id", pa.string()),
                 pa.field("filename", pa.string()),
                 pa.field("content", pa.string()),
+                pa.field("content_tokenized", pa.string()),  # jieba-segmented for FTS
                 pa.field("summary", pa.string()),
                 pa.field("section", pa.string()),
                 pa.field("chunk_index", pa.int32()),
@@ -209,6 +260,10 @@ class LanceDBStorage(BaseVectorStorage):
         """
         if not chunks:
             return
+        # Populate content_tokenized for CJK-aware FTS
+        for c in chunks:
+            if "content_tokenized" not in c:
+                c["content_tokenized"] = tokenize_for_fts(c.get("content", ""))
         vector_dim = len(chunks[0]["vector"])
         self._ensure_chunks_table(vector_dim)
         self.chunks_table.add(chunks)
@@ -234,11 +289,12 @@ class LanceDBStorage(BaseVectorStorage):
             return []
 
         if use_hybrid and self._has_fts_index() and query_text:
-            # LanceDB hybrid: search(None) + explicit vector() and text()
+            # Tokenize the query the same way content was tokenized at index time
+            tokenized_query = tokenize_for_fts(query_text)
             q = (
                 self.chunks_table.search(query_type="hybrid")
                 .vector(query_vector)
-                .text(query_text)
+                .text(tokenized_query)
             )
         else:
             # Pure vector search
@@ -276,9 +332,19 @@ class LanceDBStorage(BaseVectorStorage):
         self._indexes_ensured = True
 
     def create_fts_index(self):
-        """Create FTS index on chunk content for hybrid search."""
+        """Create FTS index on tokenized content for hybrid search.
+
+        Uses ``content_tokenized`` (jieba-segmented) so the default
+        whitespace/punctuation tokenizer can match CJK terms correctly.
+        Falls back to ``content`` if the tokenized column is missing
+        (older databases).
+        """
+        fts_field = "content_tokenized"
         try:
-            self.chunks_table.create_fts_index("content", replace=True)
+            schema = self.chunks_table.schema
+            if fts_field not in schema.names:
+                fts_field = "content"
+            self.chunks_table.create_fts_index(fts_field, replace=True)
         except Exception:
             pass  # Index may already exist
 
@@ -347,6 +413,43 @@ class LanceDBStorage(BaseVectorStorage):
                 self.chunks_table.delete(f"doc_id = '{doc_id}'")
             except Exception:
                 pass
+
+    def delete_docs_by_session_id(self, session_id: str) -> List[str]:
+        """Delete all stubs and chunks with the given session_id.
+
+        Returns the list of doc_ids that were removed.
+        """
+        removed: List[str] = []
+
+        # Find doc_ids from chunks table
+        if self.chunks_table is not None:
+            try:
+                rows = (
+                    self.chunks_table
+                    .search()
+                    .where(f"session_id = '{session_id}'")
+                    .select(["doc_id"])
+                    .limit(10000)
+                    .to_list()
+                )
+                removed = list({r["doc_id"] for r in rows})
+            except Exception:
+                pass
+
+            # Delete chunks
+            try:
+                self.chunks_table.delete(f"session_id = '{session_id}'")
+            except Exception:
+                pass
+
+        # Delete stubs
+        for doc_id in removed:
+            try:
+                self.stubs_table.delete(f"id = '{doc_id}'")
+            except Exception:
+                pass
+
+        return removed
 
     def list_docs(self) -> List[Dict[str, Any]]:
         """List all indexed document stubs."""

@@ -486,6 +486,26 @@ def delete(doc_id: str) -> None:
     m.path_index.remove(doc_id)
 
 
+def delete_by_session_id(session_id: str, collection: str | None = None) -> list[str]:
+    """Delete all documents associated with a session_id.
+
+    Args:
+        session_id: Session identifier to purge.
+        collection: If provided, also remove the doc_ids from this collection.
+
+    Returns:
+        List of doc_ids that were removed.
+    """
+    m = _get()
+    removed = m.storage.delete_docs_by_session_id(session_id)
+    for doc_id in removed:
+        m.cache.remove(doc_id)
+        m.path_index.remove(doc_id)
+        if collection:
+            m.collections_store.remove_doc(collection, doc_id)
+    return removed
+
+
 # ── Skill integration ────────────────────────────────────────────────
 # get_tool_schemas, get_system_prompt, export_skill are imported at top level.
 
