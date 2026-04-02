@@ -308,14 +308,19 @@ class MentatWatcher:
         """Watch a set of directories and index changes into a collection."""
         from watchfiles import awatch, Change
 
-        # Resolve and filter to existing directories
+        # Resolve paths, waiting for directories that don't exist yet
         resolved_paths: list[str] = []
         for p in paths:
             expanded = str(Path(p).expanduser().resolve())
             if Path(expanded).is_dir():
                 resolved_paths.append(expanded)
             else:
-                logger.warning("Watch path %r is not a directory, skipping", p)
+                logger.info("Watch path %r does not exist yet, waiting...", p)
+                while self._running and not Path(expanded).is_dir():
+                    await asyncio.sleep(2)
+                if Path(expanded).is_dir():
+                    resolved_paths.append(expanded)
+                    logger.info("Watch path %r appeared", p)
 
         if not resolved_paths:
             logger.warning("No valid watch paths for collection %r", collection_name)
@@ -336,9 +341,20 @@ class MentatWatcher:
                     break
                 for change_type, path_str in changes:
                     if change_type == Change.deleted:
-                        # In append mode, clear offset for deleted files
                         if self._is_append_mode(collection_name):
                             self._offsets.pop(path_str, None)
+                            # Purge vecdb chunks for this session
+                            session_id = Path(path_str).stem
+                            removed = self._mentat.storage.delete_docs_by_session_id(session_id)
+                            for doc_id in removed:
+                                self._mentat.cache.remove(doc_id)
+                                self._mentat.path_index.remove(doc_id)
+                                self._mentat.collections_store.remove_doc(collection_name, doc_id)
+                            if removed:
+                                logger.info(
+                                    "Purged %d docs for deleted session %s (collection: %s)",
+                                    len(removed), session_id, collection_name,
+                                )
                         continue
                     if not Path(path_str).is_file():
                         continue
