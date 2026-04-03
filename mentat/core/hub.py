@@ -64,6 +64,7 @@ class Mentat:
             summary_model=self.config.summary_model,
             summary_api_key=self.config.summary_api_key or None,
             summary_api_base=self.config.summary_api_base or None,
+            enabled=self.config.summary_enabled,
         )
 
         # Embeddings

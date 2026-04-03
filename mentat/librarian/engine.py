@@ -48,14 +48,18 @@ class Librarian:
         summary_batch_size: int = 10,
         summary_api_key: Optional[str] = None,
         summary_api_base: Optional[str] = None,
+        enabled: bool = True,
     ):
         # Chunk summarisation (fast/cheap model)
         self.summary_model = summary_model
         self.summary_batch_size = summary_batch_size
-        self._client = openai.AsyncOpenAI(
-            api_key=summary_api_key or None,
-            base_url=summary_api_base or None,
-        )
+        self.enabled = enabled
+        self._client: Optional[openai.AsyncOpenAI] = None
+        if enabled:
+            self._client = openai.AsyncOpenAI(
+                api_key=summary_api_key or None,
+                base_url=summary_api_base or None,
+            )
 
     # ------------------------------------------------------------------
     # Phase 1: Per-chunk summarisation
@@ -80,6 +84,11 @@ class Librarian:
         chunks = probe_result.chunks
         if not chunks:
             return []
+
+        # Disabled bypass: return content verbatim (no LLM calls)
+        if not self.enabled:
+            logger.debug(f"Summary disabled, returning verbatim for {probe_result.filename}")
+            return [c.content[:200] for c in chunks]
 
         # Small-file bypass: content IS the summary
         if probe_result.stats.get("is_full_content"):

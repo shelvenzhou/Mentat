@@ -68,6 +68,7 @@ class MentatConfig:
     storage_dir: str = ""
 
     # Summary model — Phase 1: bulk chunk summarisation (use a fast/cheap model)
+    summary_enabled: bool = True
     summary_model: str = ""
     summary_api_key: str = ""
     summary_api_base: str = ""
@@ -100,6 +101,9 @@ class MentatConfig:
         )
 
         # Summary model (fast/cheap — bulk chunk summarisation)
+        _summary_enabled = os.getenv("MENTAT_SUMMARY_ENABLED", "")
+        if _summary_enabled:
+            self.summary_enabled = _summary_enabled.lower() in ("1", "true", "yes")
         self.summary_model = self.summary_model or os.getenv(
             "MENTAT_SUMMARY_MODEL", "gpt-4o-mini"
         )
