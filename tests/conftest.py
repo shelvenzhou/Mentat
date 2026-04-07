@@ -24,6 +24,16 @@ class FakeEmbedding:
         return [self._vec(t) for t in texts]
 
 
+class FakeReranker:
+    """Deterministic reranker for tests."""
+
+    def __init__(self, scorer=None):
+        self._scorer = scorer or (lambda query, text: 0.0)
+
+    async def score_pairs(self, pairs):
+        return [float(self._scorer(query, text)) for query, text in pairs]
+
+
 class FakeStorage:
     """In-memory storage backend for tests (no LanceDB dependency)."""
 

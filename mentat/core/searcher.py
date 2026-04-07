@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from mentat.core.models import MentatResult, MentatDocResult, ChunkResult
@@ -24,9 +25,27 @@ def _extract_score(r: Dict[str, Any]) -> float:
     consistently.  When ``_relevance_score`` is present we invert it
     (``1 - score``) so a perfect FTS hit (1.0) becomes 0.0.
     """
+    if "_mentat_final_score" in r:
+        return r["_mentat_final_score"]
     if "_relevance_score" in r:
         return 1.0 - r["_relevance_score"]
     return r.get("_distance", 0.0)
+
+
+def _minmax(values: List[float], *, invert: bool = False) -> List[float]:
+    """Min-max normalise values to [0, 1]."""
+    if not values:
+        return []
+    lo = min(values)
+    hi = max(values)
+    if math.isclose(lo, hi):
+        base = [0.0 for _ in values]
+    else:
+        span = hi - lo
+        base = [(v - lo) / span for v in values]
+    if invert:
+        return [1.0 - v for v in base]
+    return base
 
 
 class Searcher:
@@ -84,9 +103,22 @@ class Searcher:
             else:
                 doc_ids = source_doc_ids
 
+        candidate_limit = top_k
+        if m.reranker is not None and m.config.reranker_enabled:
+            candidate_limit = max(
+                top_k,
+                m.config.reranker_top_n,
+                top_k + 5,
+                top_k * max(1, m.config.reranker_candidate_multiplier),
+            )
+        elif m.config.search_heat_weight > 0:
+            # Heat bias needs a small over-fetch window so it can promote
+            # recently-used sections that would otherwise miss the final cut.
+            candidate_limit = max(top_k, top_k + 5)
+
         query_vector = await m.embeddings.embed(query)
         raw_results = m.storage.search(
-            query_vector, query, limit=top_k, use_hybrid=hybrid, doc_ids=doc_ids,
+            query_vector, query, limit=candidate_limit, use_hybrid=hybrid, doc_ids=doc_ids,
             filters=filters,
         )
 
@@ -100,7 +132,81 @@ class Searcher:
             if did:
                 stub_cache[did] = m.storage.get_stub(did) or {}
 
-        return raw_results, stub_cache, query
+        raw_results = await self._rerank_results(query, raw_results)
+        raw_results = self._apply_heat_bias(raw_results)
+        return raw_results[:top_k], stub_cache, query
+
+    async def _rerank_results(
+        self,
+        query: str,
+        raw_results: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Apply cross-encoder reranking to the candidate set."""
+        m = self._m
+        if not raw_results:
+            return []
+        if m.reranker is None or not m.config.reranker_enabled:
+            ranked = sorted(raw_results, key=_extract_score)
+            for row in ranked:
+                row["_mentat_final_score"] = _extract_score(row)
+            return ranked
+
+        logger.debug(
+            "Applying reranker: provider=%s candidates=%d",
+            m.config.reranker_provider,
+            len(raw_results),
+        )
+
+        pairs = []
+        for row in raw_results:
+            text = row.get("content") or row.get("summary") or ""
+            pairs.append((query, text))
+
+        rerank_scores = await m.reranker.score_pairs(pairs)
+        base_scores = [_extract_score(r) for r in raw_results]
+        norm_base = _minmax(base_scores, invert=False)
+        norm_rerank = _minmax(list(rerank_scores), invert=True)
+        weight = min(max(m.config.reranker_weight, 0.0), 1.0)
+
+        ranked_rows: List[Dict[str, Any]] = []
+        for row, base_score, rerank_score, base_norm, rerank_norm in zip(
+            raw_results, base_scores, rerank_scores, norm_base, norm_rerank
+        ):
+            merged = ((1.0 - weight) * base_norm) + (weight * rerank_norm)
+            updated = dict(row)
+            updated["_mentat_base_score"] = base_score
+            updated["_mentat_rerank_score"] = float(rerank_score)
+            updated["_mentat_final_score"] = merged
+            ranked_rows.append(updated)
+
+        ranked_rows.sort(key=_extract_score)
+        return ranked_rows
+
+    def _apply_heat_bias(
+        self,
+        raw_results: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Apply decayed section heat as an independent search bias."""
+        weight = self._m.config.search_heat_weight
+        if not raw_results or weight <= 0:
+            return raw_results
+
+        adjusted: List[Dict[str, Any]] = []
+        for row in raw_results:
+            updated = dict(row)
+            base_score = updated.get("_mentat_final_score", _extract_score(updated))
+            heat_score = 0.0
+            section = updated.get("section")
+            doc_id = updated.get("doc_id", "")
+            if section and doc_id:
+                heat_score = self._m.section_heat.get_score(doc_id, section)
+            heat_bias = weight * (heat_score / (1.0 + heat_score))
+            updated["_mentat_heat_score"] = heat_score
+            updated["_mentat_final_score"] = base_score - heat_bias
+            adjusted.append(updated)
+
+        adjusted.sort(key=_extract_score)
+        return adjusted
 
     @staticmethod
     def _parse_toc_entries(stub: Dict, with_metadata: bool) -> List[TocEntry]:

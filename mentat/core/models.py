@@ -79,6 +79,19 @@ class MentatConfig:
     embedding_api_key: str = ""
     embedding_api_base: str = ""
 
+    # Reranker model
+    reranker_enabled: bool = False
+    reranker_provider: str = ""
+    reranker_model: str = ""
+    reranker_api_key: str = ""
+    reranker_api_base: str = ""
+    reranker_top_n: int = 10
+    reranker_candidate_multiplier: int = 1
+    reranker_weight: float = 0.85
+
+    # Search ranking bias
+    search_heat_weight: float = 0.0
+
     # Background processing
     max_concurrent_tasks: int = 5
 
@@ -126,6 +139,40 @@ class MentatConfig:
         )
         self.embedding_api_base = self.embedding_api_base or os.getenv(
             "MENTAT_EMBEDDING_API_BASE", ""
+        )
+
+        # Reranker
+        _reranker_enabled = os.getenv("MENTAT_RERANKER_ENABLED", "")
+        if _reranker_enabled:
+            self.reranker_enabled = _reranker_enabled.lower() in ("1", "true", "yes")
+        self.reranker_provider = self.reranker_provider or os.getenv(
+            "MENTAT_RERANKER_PROVIDER", "cross_encoder"
+        )
+        self.reranker_model = self.reranker_model or os.getenv(
+            "MENTAT_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"
+        )
+        self.reranker_api_key = self.reranker_api_key or os.getenv(
+            "MENTAT_RERANKER_API_KEY", ""
+        )
+        self.reranker_api_base = self.reranker_api_base or os.getenv(
+            "MENTAT_RERANKER_API_BASE", ""
+        )
+        self.reranker_top_n = int(
+            os.getenv("MENTAT_RERANKER_TOP_N", str(self.reranker_top_n))
+        )
+        self.reranker_candidate_multiplier = int(
+            os.getenv(
+                "MENTAT_RERANKER_CANDIDATE_MULTIPLIER",
+                str(self.reranker_candidate_multiplier),
+            )
+        )
+        self.reranker_weight = float(
+            os.getenv("MENTAT_RERANKER_WEIGHT", str(self.reranker_weight))
+        )
+
+        # Search ranking bias
+        self.search_heat_weight = float(
+            os.getenv("MENTAT_SEARCH_HEAT_WEIGHT", str(self.search_heat_weight))
         )
 
         # Background processing

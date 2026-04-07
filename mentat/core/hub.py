@@ -24,6 +24,7 @@ from mentat.core.searcher import Searcher
 from mentat.core.reader import Reader
 from mentat.core.watcher import MentatWatcher
 from mentat.core.embeddings import EmbeddingRegistry
+from mentat.core.reranker import RerankerRegistry
 from mentat.core.queue import BackgroundProcessor
 from mentat.core.access_tracker import AccessTracker
 from mentat.core.section_heat import SectionHeatTracker
@@ -74,6 +75,21 @@ class Mentat:
             api_key=self.config.embedding_api_key or None,
             api_base=self.config.embedding_api_base or None,
         )
+        self.reranker = None
+        if self.config.reranker_enabled:
+            self.reranker = RerankerRegistry.get_provider(
+                self.config.reranker_provider,
+                model=self.config.reranker_model,
+                api_key=self.config.reranker_api_key or None,
+                api_base=self.config.reranker_api_base or None,
+            )
+            self.logger.info(
+                "Reranker enabled: provider=%s model=%s",
+                self.config.reranker_provider,
+                self.config.reranker_model,
+            )
+        else:
+            self.logger.info("Reranker disabled")
 
         # Collections
         self.collections_store = CollectionStore(store_dir=self.config.db_path)

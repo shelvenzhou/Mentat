@@ -1,0 +1,51 @@
+[
+  {
+    "id": "zh_activity_01",
+    "query": "我在干什么",
+    "documents": ["我在xxx酒店", "我正在开技术会议"],
+    "expected_top_index": 1,
+    "note": "Activity question should prefer the action sentence over the location sentence."
+  },
+  {
+    "id": "zh_activity_02",
+    "query": "我正在做什么",
+    "documents": ["我在xxx酒店", "我正在开技术会议"],
+    "expected_top_index": 1,
+    "note": "More explicit activity wording."
+  },
+  {
+    "id": "zh_location_01",
+    "query": "我在什么地方",
+    "documents": ["我在xxx酒店", "我正在开技术会议"],
+    "expected_top_index": 0,
+    "note": "Location question should prefer the place sentence."
+  },
+  {
+    "id": "zh_activity_03",
+    "query": "我在做什么事情",
+    "documents": ["我在机场候机", "我正在和客户谈合同"],
+    "expected_top_index": 1,
+    "note": "Activity should beat a location/state sentence."
+  },
+  {
+    "id": "zh_location_02",
+    "query": "我现在在哪",
+    "documents": ["我在机场候机", "我正在和客户谈合同"],
+    "expected_top_index": 0,
+    "note": "Location should beat activity when the query is about whereabouts."
+  },
+  {
+    "id": "en_activity_01",
+    "query": "What am I doing?",
+    "documents": ["I am at the hotel", "I am having a technical meeting"],
+    "expected_top_index": 1,
+    "note": "Activity question should prefer the action sentence over the location sentence."
+  },
+  {
+    "id": "en_location_01",
+    "query": "Where am I?",
+    "documents": ["I am at the hotel", "I am having a technical meeting"],
+    "expected_top_index": 0,
+    "note": "Location question should prefer the place sentence."
+  }
+]

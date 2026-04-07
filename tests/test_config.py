@@ -16,7 +16,7 @@ class TestMentatConfig:
         assert c.storage_dir == "./mentat_files"
         assert c.summary_model == "gpt-4o-mini"
         assert c.embedding_model == "text-embedding-3-small"
-        assert c.embedding_provider == "litellm"
+        assert c.embedding_provider == "openai"
         assert c.summary_api_key == ""
         assert c.summary_api_base == ""
         assert c.embedding_api_key == ""

@@ -123,6 +123,7 @@ Mentat achieves the logical depth of GraphRAG through structure-aware "fingerpri
 - **Heat Tracking**: Weighted scoring (read_segment > inspect > search) with exponential time decay.
 - **Multi-Provider LLM**: Powered by `litellm` — use OpenAI, Claude, Gemini, Ollama, or any custom endpoint.
 - **Hybrid Search**: LanceDB-powered vector + full-text search with reranking.
+- **Cross-Encoder Reranking**: Optional second-stage reranker for semantic disambiguation, including multilingual queries.
 - **File Watcher**: Auto-reindex on changes with content-hash deduplication.
 - **Async Indexing**: Return immediately (~1-3s) while embeddings process in the background.
 - **Pluggable Storage**: Swap LanceDB for any vector database via `BaseVectorStorage`.
@@ -143,6 +144,7 @@ pip install mentat-sr[image]      # Pillow for image metadata extraction
 pip install mentat-sr[office]     # python-docx + python-pptx
 pip install mentat-sr[calendar]   # icalendar
 pip install mentat-sr[web]        # trafilatura for HTML content extraction
+pip install mentat-sr[rerank]     # sentence-transformers cross-encoder reranker
 pip install mentat-sr[all]        # Everything
 ```
 
@@ -216,6 +218,26 @@ MENTAT_EMBEDDING_MODEL=openai/text-embedding-3-small
 # MENTAT_EMBEDDING_API_KEY=
 # MENTAT_EMBEDDING_API_BASE=
 
+# Optional cross-encoder reranker
+# Good multilingual default for Chinese + English mixed queries
+# MENTAT_RERANKER_ENABLED=true
+# MENTAT_RERANKER_PROVIDER=cross_encoder     # or: external
+# MENTAT_RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+# MENTAT_RERANKER_API_BASE=https://your-reranker/v1/rerank   # required for external
+# MENTAT_RERANKER_API_KEY=...                                # optional bearer token
+# MENTAT_RERANKER_TOP_N=10
+# MENTAT_RERANKER_CANDIDATE_MULTIPLIER=1
+# MENTAT_RERANKER_WEIGHT=0.85
+
+# Example external reranker
+# MENTAT_RERANKER_PROVIDER=external
+# MENTAT_RERANKER_MODEL=BAAI/bge-reranker-v2-m3
+# MENTAT_RERANKER_API_BASE=https://bge-reranker.use2.phala.com/v1/rerank
+# MENTAT_RERANKER_API_KEY=your-api-key
+
+# Optional heat-based ranking bias (independent from reranker)
+# MENTAT_SEARCH_HEAT_WEIGHT=0.15
+
 # Global provider API keys (litellm reads these natively)
 OPENAI_API_KEY=sk-...
 # ANTHROPIC_API_KEY=sk-ant-...
@@ -259,10 +281,19 @@ mentat.configure(MentatConfig(
 | `summary_model` | `MENTAT_SUMMARY_MODEL` | `gpt-4o-mini` | litellm model string for chunk summarization |
 | `summary_api_key` | `MENTAT_SUMMARY_API_KEY` | `""` | API key override for summary model |
 | `summary_api_base` | `MENTAT_SUMMARY_API_BASE` | `""` | Custom endpoint for summary model |
-| `embedding_provider` | `MENTAT_EMBEDDING_PROVIDER` | `litellm` | Embedding provider |
+| `embedding_provider` | `MENTAT_EMBEDDING_PROVIDER` | `openai` | Embedding provider |
 | `embedding_model` | `MENTAT_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |
 | `embedding_api_key` | `MENTAT_EMBEDDING_API_KEY` | `""` | API key override for embedding |
 | `embedding_api_base` | `MENTAT_EMBEDDING_API_BASE` | `""` | Custom endpoint for embedding |
+| `reranker_enabled` | `MENTAT_RERANKER_ENABLED` | `false` | Enable second-stage reranking |
+| `reranker_provider` | `MENTAT_RERANKER_PROVIDER` | `cross_encoder` | Reranker backend: local model or external HTTP service |
+| `reranker_model` | `MENTAT_RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Reranker model name |
+| `reranker_api_key` | `MENTAT_RERANKER_API_KEY` | `""` | Bearer token for external reranker |
+| `reranker_api_base` | `MENTAT_RERANKER_API_BASE` | `""` | External reranker endpoint URL |
+| `reranker_top_n` | `MENTAT_RERANKER_TOP_N` | `10` | Max candidates retained for reranking |
+| `reranker_candidate_multiplier` | `MENTAT_RERANKER_CANDIDATE_MULTIPLIER` | `1` | Retrieval over-fetch multiplier before reranking |
+| `reranker_weight` | `MENTAT_RERANKER_WEIGHT` | `0.85` | Weight of reranker score in final ranking |
+| `search_heat_weight` | `MENTAT_SEARCH_HEAT_WEIGHT` | `0.0` | Independent decayed heat bias added after reranking |
 | `max_concurrent_tasks` | `MENTAT_MAX_CONCURRENT_TASKS` | `5` | Background processing concurrency |
 | `access_recent_size` | `MENTAT_ACCESS_RECENT_SIZE` | `200` | Recent-access LRU capacity |
 | `access_hot_size` | `MENTAT_ACCESS_HOT_SIZE` | `50` | Hot-queue capacity |

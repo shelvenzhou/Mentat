@@ -52,11 +52,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+rerank = ["sentence-transformers>=3.0.0"]
 image = ["Pillow>=10.0.0"]
 office = ["python-docx>=1.1.0", "python-pptx>=1.0.0"]
 calendar = ["icalendar>=6.0.0"]
 web = ["trafilatura>=2.0.0"]
 all = [
+    "sentence-transformers>=3.0.0",
     "Pillow>=10.0.0",
     "python-docx>=1.1.0",
     "python-pptx>=1.0.0",
