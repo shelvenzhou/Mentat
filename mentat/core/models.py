@@ -66,6 +66,8 @@ class MentatConfig:
     # Storage
     db_path: str = ""
     storage_dir: str = ""
+    wiki_dir: str = ""
+    wiki_agent_driver: str = "codex"
 
     # Summary model — Phase 1: bulk chunk summarisation (use a fast/cheap model)
     summary_enabled: bool = True
@@ -98,6 +100,12 @@ class MentatConfig:
         self.db_path = self.db_path or os.getenv("MENTAT_DB_PATH", "./mentat_db")
         self.storage_dir = self.storage_dir or os.getenv(
             "MENTAT_STORAGE_DIR", "./mentat_files"
+        )
+        self.wiki_dir = self.wiki_dir or os.getenv(
+            "MENTAT_WIKI_DIR", "./mentat_wiki"
+        )
+        self.wiki_agent_driver = self.wiki_agent_driver or os.getenv(
+            "MENTAT_WIKI_DRIVER", "codex"
         )
 
         # Summary model (fast/cheap — bulk chunk summarisation)

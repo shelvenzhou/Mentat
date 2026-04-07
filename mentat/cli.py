@@ -55,6 +55,75 @@ def help(ctx):
     _print_help(ctx)
 
 
+@cli.group("wiki")
+def wiki_cmd():
+    """Manage the LLM Wiki."""
+    pass
+
+
+@wiki_cmd.command("rebuild")
+def wiki_rebuild():
+    """Rebuild deterministic wiki pages from indexed documents."""
+    m = Mentat.get_instance()
+    count = m.wiki_generator.rebuild_all()
+    click.echo(f"Rebuilt {count} wiki pages at {m.config.wiki_dir}")
+
+
+@wiki_cmd.command("url")
+def wiki_url():
+    """Print the wiki URL (start with `mentat serve` first)."""
+    click.echo("http://localhost:7832/wiki/")
+
+
+def _run_wiki_agent(mode: str, driver: str | None) -> None:
+    from mentat.wiki import WikiAgentRunner
+
+    m = Mentat.get_instance()
+    runner = WikiAgentRunner(
+        wiki_dir=m.config.wiki_dir,
+        default_driver=m.config.wiki_agent_driver,
+    )
+    exit_code = runner.run(mode, driver=driver)
+    if exit_code != 0:
+        raise SystemExit(exit_code)
+
+
+@wiki_cmd.command("sync")
+@click.option(
+    "--driver",
+    type=click.Choice(["codex", "claude", "openclaw"]),
+    default=None,
+    help="Agent driver to use (defaults to MENTAT_WIKI_DRIVER or 'codex').",
+)
+def wiki_sync(driver):
+    """Run an agent sync pass to update topics and index.md."""
+    _run_wiki_agent("sync", driver)
+
+
+@wiki_cmd.command("verify")
+@click.option(
+    "--driver",
+    type=click.Choice(["codex", "claude", "openclaw"]),
+    default=None,
+    help="Agent driver to use (defaults to MENTAT_WIKI_DRIVER or 'codex').",
+)
+def wiki_verify(driver):
+    """Run an agent verification pass for topic pages."""
+    _run_wiki_agent("verify", driver)
+
+
+@wiki_cmd.command("lint")
+@click.option(
+    "--driver",
+    type=click.Choice(["codex", "claude", "openclaw"]),
+    default=None,
+    help="Agent driver to use (defaults to MENTAT_WIKI_DRIVER or 'codex').",
+)
+def wiki_lint(driver):
+    """Run an agent lint pass for wiki housekeeping."""
+    _run_wiki_agent("lint", driver)
+
+
 def _resolve_doc_id(m_or_prefix, prefix=None) -> str:
     """Resolve a doc ID prefix to full ID, or exit with a friendly error.
 

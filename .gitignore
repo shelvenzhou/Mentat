@@ -15,6 +15,7 @@ venv/
 # Mentat Storage
 *mentat_db/
 *mentat_files/
+*mentat_wiki/
 
 # IDEs
 .vscode/

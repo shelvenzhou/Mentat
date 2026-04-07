@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional  # noqa: F401 – Dict used in Pydantic models
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -468,5 +469,75 @@ def create_app(config: Optional[MentatConfig] = None) -> FastAPI:
         coll = m.collection(name)
         results = await coll.search(req.query, top_k=req.top_k, hybrid=req.hybrid)
         return {"results": [r.model_dump() for r in results]}
+
+    # ── Wiki ─────────────────────────────────────────────────────────
+
+    @app.get("/wiki/", response_class=HTMLResponse)
+    async def wiki_index():
+        from mentat.wiki.renderer import render_wiki_file
+        m = _mentat()
+        m.wiki_generator.ensure_workspace_files()
+        html = render_wiki_file(m.config.wiki_dir, "index.md", "Index")
+        if html is None:
+            return HTMLResponse("<p>Wiki index not yet generated.</p>", status_code=200)
+        return HTMLResponse(html)
+
+    @app.get("/wiki/topics/", response_class=HTMLResponse)
+    async def wiki_topics():
+        from mentat.wiki.renderer import render_topic_index
+
+        m = _mentat()
+        m.wiki_generator.ensure_workspace_files()
+        html = render_topic_index(m.config.wiki_dir)
+        return HTMLResponse(html or "<p>No topics yet.</p>")
+
+    @app.get("/wiki/topics/{slug}", response_class=HTMLResponse)
+    async def wiki_topic(slug: str):
+        from mentat.wiki.renderer import render_topic_page
+
+        m = _mentat()
+        html = render_topic_page(m.config.wiki_dir, slug)
+        if html is None:
+            raise HTTPException(status_code=404, detail=f"Wiki topic not found: {slug}")
+        return HTMLResponse(html)
+
+    @app.get("/wiki/pages/{page_id}", response_class=HTMLResponse)
+    async def wiki_page(page_id: str):
+        from mentat.wiki.renderer import render_wiki_page
+        m = _mentat()
+        html = render_wiki_page(m.config.wiki_dir, page_id)
+        if html is None:
+            raise HTTPException(status_code=404, detail=f"Wiki page not found: {page_id}")
+        return HTMLResponse(html)
+
+    @app.get("/wiki/memories", response_class=HTMLResponse)
+    async def wiki_memories():
+        from mentat.wiki.renderer import render_wiki_file
+        m = _mentat()
+        m.wiki_generator.generate_memories_page()
+        html = render_wiki_file(m.config.wiki_dir, "_memories.md", "Memories")
+        return HTMLResponse(html or "<p>No memories yet.</p>")
+
+    @app.get("/wiki/conversations", response_class=HTMLResponse)
+    async def wiki_conversations():
+        from mentat.wiki.renderer import render_wiki_file
+        m = _mentat()
+        m.wiki_generator.generate_conversations_page()
+        html = render_wiki_file(m.config.wiki_dir, "_conversations.md", "Conversations")
+        return HTMLResponse(html or "<p>No conversations yet.</p>")
+
+    @app.get("/wiki/resolve")
+    async def wiki_resolve(url: str):
+        m = _mentat()
+        result = m.wiki_generator.resolve_url(url)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result)
+        return result
+
+    @app.post("/wiki/rebuild")
+    async def wiki_rebuild():
+        m = _mentat()
+        count = m.wiki_generator.rebuild_all()
+        return {"rebuilt": count}
 
     return app

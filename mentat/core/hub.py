@@ -81,6 +81,16 @@ class Mentat:
         # Adaptors
         self._adaptors: List[BaseAdaptor] = []
 
+        # Wiki — auto-generated browsable wiki from indexed documents
+        from mentat.wiki import WikiGenerator, WikiAdaptor
+        self.wiki_generator = WikiGenerator(
+            wiki_dir=self.config.wiki_dir,
+            storage=self.storage,
+            collections_store=self.collections_store,
+            file_store=self.file_store,
+        )
+        self.register_adaptor(WikiAdaptor(self.wiki_generator))
+
         # Access tracker (two-layer FIFO for on-demand embedding)
         heat_map_path = str(Path(self.config.db_path) / "heat_map.json")
         self.access_tracker = AccessTracker(
