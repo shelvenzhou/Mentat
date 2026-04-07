@@ -19,7 +19,7 @@ Usage::
     probe_result = mentat.probe("data.csv")
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # ── Core classes & models ────────────────────────────────────────────
 from mentat.core.hub import Mentat

@@ -7,7 +7,7 @@ packages = ["mentat"]
 
 [project]
 name = "mentat-sr"
-version = "0.1.0"
+version = "0.2.0"
 description = "Strategic Retrieval for LLM agents. Structure-aware document intelligence with two-step retrieval protocol."
 readme = "README.md"
 requires-python = ">=3.10"
